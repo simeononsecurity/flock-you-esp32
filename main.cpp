@@ -9,18 +9,18 @@
 // CONFIG
 // ============================================================
 
-#define BUZZER_PIN 3
+#define BUZZER_PIN 25
 #define USE_BUZZER 1
 
-// Onboard user LED on Seeed XIAO ESP32-S3 is GPIO21 and is ACTIVE LOW
-// (driving the pin LOW lights the LED).
-#define LED_PIN          21
+// Onboard user LED on standard ESP32 DevKit is GPIO2 and is ACTIVE HIGH
+// (driving the pin HIGH lights the LED).
+#define LED_PIN          2
 #define USE_LED          1
-#define LED_ACTIVE_HIGH  0
+#define LED_ACTIVE_HIGH  1
 #define LED_FLASH_MS     120
 
 #define MIRROR_SERIAL    1
-#define MIRROR_TX_PIN    43
+#define MIRROR_TX_PIN    17
 #define MIRROR_BAUD      115200
 
 #define CHANNEL_MODE_FULL_HOP   0
