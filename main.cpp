@@ -1046,7 +1046,8 @@ void setup() {
   Serial.begin(115200);
   // Crucial for USB-optional operation: without this, Serial.write() will
   // block indefinitely on an ESP32-S3 USB-CDC port when no host is attached.
-  Serial.setTxTimeoutMs(0);
+  // NOTE: setTxTimeoutMs() is only available on ESP32-S3 USB CDC, not needed for standard ESP32 UART
+  // Serial.setTxTimeoutMs(0);
   delay(300);
 
 #if MIRROR_SERIAL
