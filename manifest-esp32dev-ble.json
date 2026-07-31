@@ -1,0 +1,16 @@
+{
+  "name": "Flock You - Generic ESP32 DevKit (BLE)",
+  "version": "latest",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32",
+      "parts": [
+        { "path": "firmware/esp32dev-ble/bootloader.bin", "offset": 4096 },
+        { "path": "firmware/esp32dev-ble/partitions.bin", "offset": 32768 },
+        { "path": "firmware/esp32dev-ble/boot_app0.bin",  "offset": 57344 },
+        { "path": "firmware/esp32dev-ble/firmware.bin",   "offset": 65536 }
+      ]
+    }
+  ]
+}
