@@ -1,0 +1,16 @@
+{
+  "name": "Flock You - M5StickC Plus SE (BLE)",
+  "version": "latest",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32",
+      "parts": [
+        { "path": "firmware/m5stickc-plus-se-ble/bootloader.bin", "offset": 4096 },
+        { "path": "firmware/m5stickc-plus-se-ble/partitions.bin", "offset": 32768 },
+        { "path": "firmware/m5stickc-plus-se-ble/boot_app0.bin",  "offset": 57344 },
+        { "path": "firmware/m5stickc-plus-se-ble/firmware.bin",   "offset": 65536 }
+      ]
+    }
+  ]
+}
