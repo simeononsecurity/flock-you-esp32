@@ -1,0 +1,16 @@
+{
+  "name": "Flock You - Beacon Tester (M5Atom Lite)",
+  "version": "latest",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32",
+      "parts": [
+        { "path": "firmware/m5atom-lite-beacon/bootloader.bin", "offset": 4096 },
+        { "path": "firmware/m5atom-lite-beacon/partitions.bin", "offset": 32768 },
+        { "path": "firmware/m5atom-lite-beacon/boot_app0.bin",  "offset": 57344 },
+        { "path": "firmware/m5atom-lite-beacon/firmware.bin",   "offset": 65536 }
+      ]
+    }
+  ]
+}
