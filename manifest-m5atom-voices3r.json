@@ -1,0 +1,16 @@
+{
+  "name": "Flock You - M5Atom VoiceS3R (No BLE, ESP32-S3)",
+  "version": "latest",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32-S3",
+      "parts": [
+        { "path": "firmware/m5atom-voices3r/bootloader.bin", "offset": 0 },
+        { "path": "firmware/m5atom-voices3r/partitions.bin", "offset": 32768 },
+        { "path": "firmware/m5atom-voices3r/boot_app0.bin",  "offset": 57344 },
+        { "path": "firmware/m5atom-voices3r/firmware.bin",   "offset": 65536 }
+      ]
+    }
+  ]
+}

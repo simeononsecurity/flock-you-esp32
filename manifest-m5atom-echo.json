@@ -1,0 +1,16 @@
+{
+  "name": "Flock You - M5Atom Echo (No BLE)",
+  "version": "latest",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32",
+      "parts": [
+        { "path": "firmware/m5atom-echo/bootloader.bin", "offset": 4096 },
+        { "path": "firmware/m5atom-echo/partitions.bin", "offset": 32768 },
+        { "path": "firmware/m5atom-echo/boot_app0.bin",  "offset": 57344 },
+        { "path": "firmware/m5atom-echo/firmware.bin",   "offset": 65536 }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "name": "Flock You - M5Stack Core2 For AWS (No BLE)",
+  "version": "latest",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32",
+      "parts": [
+        { "path": "firmware/m5stack-core2-aws/bootloader.bin", "offset": 4096 },
+        { "path": "firmware/m5stack-core2-aws/partitions.bin", "offset": 32768 },
+        { "path": "firmware/m5stack-core2-aws/boot_app0.bin",  "offset": 57344 },
+        { "path": "firmware/m5stack-core2-aws/firmware.bin",   "offset": 65536 }
+      ]
+    }
+  ]
+}
