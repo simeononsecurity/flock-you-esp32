@@ -142,8 +142,35 @@ show_boot_output() {
         echo "✅ Firmware running."
     else
         echo "⚠️  No firmware output seen in ${timeout_s}s — check baud rate or reboot manually."
+        # ROOT CAUSE (confirmed via live two-board hardware testing): the
+        # Atom VoiceS3R/Echo S3R's ESP32-S3 native USB-JTAG/Serial peripheral
+        # re-enumerates as the SAME "USB JTAG/serial debug unit" (VID:PID
+        # 303A:1001) whether the chip is running the app OR still sitting in
+        # the ROM download/bootloader after a flash — so a re-appearing
+        # /dev/cu.usbmodem* port is NOT proof the app booted. esptool's
+        # software-only reset strategies (both the two-stage flash's
+        # `--after hard_reset` and a separate `--before default_reset
+        # --after hard_reset` diagnostic pulse) were both confirmed
+        # insufficient to reliably kick this specific board out of download
+        # mode. Unlike Atom Lite/Echo/Voice (FTDI/CH9102 USB-UART bridges
+        # with real DTR/RTS-driven auto-program transistor circuits), this
+        # board's native-USB boot-mode latch only reliably clears on an
+        # actual power-cycle (confirmed: a full USB-C unplug + replug
+        # produced immediate, correct firmware boot output when repeated
+        # soft-resets had produced none). See .clinerules/02-test-before-commit.md.
+        if [[ "$env" == m5atom-voices3r* ]]; then
+            echo ""
+            echo "   ℹ️  Atom VoiceS3R / Echo S3R: this board can remain stuck in"
+            echo "      USB download mode after flashing even though its port"
+            echo "      re-appears normally. If you don't see firmware output:"
+            echo "      → Fully UNPLUG the USB-C cable, wait a few seconds, then"
+            echo "        plug it back in (a software/reset-button retry is NOT"
+            echo "        enough — this needs a real power-cycle)."
+            echo ""
+        fi
     fi
 }
+
 
 # Waits up to timeout_s for a usbserial port to exist, since a failed/aborted
 # esptool session can leave the device mid-reset for a moment (or, rarely,
@@ -349,13 +376,21 @@ flash_device() {
             RESTART_PORT=$(ls /dev/cu.usbmodem* 2>/dev/null | head -1)
         fi
 
+        # NOTE: a re-appearing port only proves the USB-JTAG/Serial
+        # peripheral re-enumerated — it does NOT prove the app booted. This
+        # board's ROM can remain latched in download mode with the exact
+        # same VID:PID showing up on the bus (see show_boot_output()'s
+        # comment below for the confirmed root cause/fix). Actual boot
+        # confirmation happens in show_boot_output(), called after this
+        # function returns — don't claim "running" here.
         if [[ -n "$RESTART_PORT" ]]; then
-            echo "✅ Device running at $RESTART_PORT"
+            echo "🔌 Device port detected at $RESTART_PORT (verifying boot next)..."
         else
             echo "⚠️  Device port not detected — may still be booting."
         fi
         # Expose final port to caller so show_boot_output knows where to connect
         BOOT_PORT="${RESTART_PORT:-$port}"
+
     else
         # FTDI devices stay on the same port after upload reset
         BOOT_PORT="$port"

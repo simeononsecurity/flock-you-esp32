@@ -228,8 +228,49 @@ if [[ -z "$RESTART_PORT" ]]; then
     RESTART_PORT=$(ls /dev/cu.usbmodem* 2>/dev/null | head -1)
 fi
 
+# NOTE: a re-appearing /dev/cu.usbmodem* port only proves the ESP32-S3's
+# native USB-JTAG/Serial peripheral re-enumerated — it does NOT prove the
+# app actually booted. CONFIRMED via live hardware testing: this board's
+# ROM can remain latched in USB download/bootloader mode after esptool's
+# software-only `--after hard-reset`/`hard_reset` (both the two-stage
+# flash's reset and a separate standalone reset pulse were insufficient),
+# while the port shows the exact same VID:PID ("USB JTAG/serial debug
+# unit", 303A:1001) whether the app is running or the chip is stuck in
+# download mode. Unlike Atom Lite/Echo/Voice (FTDI/CH9102 USB-UART bridges
+# with real DTR/RTS-driven auto-program transistor circuits, which DO
+# reliably leave download mode via software reset), this board's boot-mode
+# latch only reliably clears on an actual power-cycle — confirmed: a full
+# USB-C unplug + replug produced immediate correct firmware boot output
+# when repeated software resets had produced none. See
+# .clinerules/02-test-before-commit.md.
 if [[ -n "$RESTART_PORT" ]]; then
-    echo "✅ Device running at $RESTART_PORT"
+    echo "🔌 Device port detected at $RESTART_PORT — verifying firmware actually booted..."
+    BOOTED=0
+    if exec 3<>"$RESTART_PORT" 2>/dev/null; then
+        stty -f "$RESTART_PORT" 115200 raw cs8 -cstopb -parenb clocal -hupcl 2>/dev/null
+        DEADLINE=$(( $(date +%s) + 12 ))
+        while (( $(date +%s) < DEADLINE )); do
+            if IFS= read -r -t 2 line <&3 2>/dev/null; then
+                line="${line%$'\r'}"
+                [[ -n "$line" ]] && printf "   \033[2m%s\033[0m\n" "$line"
+                if [[ "$line" == *"[flockyou]"* ]]; then
+                    BOOTED=1
+                    break
+                fi
+            fi
+        done
+        exec 3>&- 2>/dev/null
+    fi
+
+    if [[ $BOOTED -eq 1 ]]; then
+        echo "✅ Firmware confirmed running at $RESTART_PORT"
+    else
+        echo "⚠️  No firmware output seen — the board is likely still stuck in"
+        echo "    USB download mode (esptool's software reset was not enough)."
+        echo "    → Fully UNPLUG the USB-C cable, wait a few seconds, then plug"
+        echo "      it back in. This is a genuine hardware power-cycle, NOT a"
+        echo "      button press or another flash attempt."
+    fi
 else
     echo "⚠️  Port not detected — device may still be booting. Unplug and re-plug if needed."
 fi
@@ -252,3 +293,4 @@ if [[ -n "$PORT" ]]; then
 fi
 
 echo "✅ Done!"
+

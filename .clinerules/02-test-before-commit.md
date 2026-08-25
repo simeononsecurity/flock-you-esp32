@@ -96,6 +96,40 @@ before considering any firmware change complete.
    `upload_firmware` requires approval you can't grant, fall back to a raw
    `execute_command` invocation of `esptool.py` instead (subject to the
    normal human-approval flow for potentially-dangerous commands).
+9. **A re-enumerated ESP32-S3 native-USB port after a flash does NOT prove
+   the app booted — CONFIRMED on Atom VoiceS3R/Echo S3R via live hardware
+   testing.** This board's built-in USB-JTAG/Serial peripheral advertises
+   the exact same VID:PID (`303A:1001`, "USB JTAG/serial debug unit")
+   whether the chip is running the flashed application OR still sitting in
+   the ROM download/bootloader — so `ls /dev/cu.usbmodem*` succeeding, or
+   even `esptool chip_id`/`read-mac` succeeding, is consistent with BOTH
+   states and proves nothing about which one you're in. In a live session,
+   the board was flashed successfully (esptool reported "Hash of data
+   verified" and exited 0) but produced **zero** serial output across
+   every capture method/window tried (8s/12s/35s+, on both the original
+   port and its post-reset renumbered path) — including a full 30-second
+   `HEARTBEAT_MS` window in `main.cpp`'s `loop()`, which rules out "just
+   missed the early boot lines" as the explanation. Both `esptool`
+   software-reset strategies already in use in this project's flash
+   scripts (`--before usb-reset --after hard-reset` in the two-stage
+   flash, and a separate standalone `--before default_reset --after
+   hard_reset` diagnostic pulse) left the board in this same
+   zero-output state. Only a **genuine physical power-cycle** (fully
+   unplugging the USB-C cable, waiting a few seconds, then replugging —
+   NOT a button press, NOT another esptool reset) reliably cleared it;
+   firmware output (the `[flockyou] scanning...` heartbeat) appeared
+   immediately after. This matches M5Stack's own official VoiceS3R
+   documentation, which describes ENTERING download mode via a manual
+   button-hold-until-green-LED procedure rather than software-only
+   DTR/RTS signaling — unlike Atom Lite/Echo/Voice, which use FTDI/CH9102
+   USB-UART bridge chips with real auto-program transistor circuits that
+   respond reliably to software resets. `flash.sh`'s `show_boot_output()`
+   and `flash_voices3r.sh`'s restart step now actually read for a
+   `[flockyou]` tag before declaring the device "running" (previously they
+   declared success purely from port presence, which produced a
+   misleading "✅ Device running" message on a board stuck in download
+   mode), and print this exact unplug/replug instruction when no firmware
+   output appears within their timeout.
 
 ## Before committing
 
