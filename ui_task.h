@@ -171,7 +171,11 @@ static void uiPublishAlert(const char* method, const char* mac, uint8_t confiden
         strncpy(g_uiAlert.dispType, dispType, sizeof(g_uiAlert.dispType) - 1);
         g_uiAlert.dispType[sizeof(g_uiAlert.dispType) - 1] = '\0';
     }
-    g_uiAlertSeq++;
+    // Compound assignment rather than `++`: incrementing a volatile-qualified
+    // object is deprecated as of C++20 (P1152R4 / -Wvolatile), and this
+    // project's ESP32 Arduino core compiles as gnu++20, so `g_uiAlertSeq++`
+    // emitted a deprecation warning on every build. Semantics are identical.
+    g_uiAlertSeq += 1;
     portEXIT_CRITICAL(&g_uiAlertMux);
 }
 

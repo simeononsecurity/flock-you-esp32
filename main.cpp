@@ -364,6 +364,105 @@ static const char* ssid_exact_flock_cam_net = "Flock Camera net.";
 // defined — see the "CONFIDENCE SCORE COMPUTATION" section).
 
 // ============================================================
+// SNIFF STATS — arrival-vs-match instrumentation (diagnostic)
+// ============================================================
+//
+// WHY THIS EXISTS: two-board cross-device testing
+// (m5atom-lite-beacon -> m5atom-lite-ble) found that a specific SUBSET of
+// alert types was never caught (ALERT_OUI_ADDR1/ADDR2/ADDR3,
+// ALERT_LAA_SSID, the SEQ_MAC_PAIR_BONUS, ALERT_BLE_RAVEN_UUID,
+// ALERT_BLE_NAME) while structurally-similar paths (ALERT_WILDCARD_PROBE,
+// ALERT_SSID, ALERT_OUI_MFR, ALERT_SOUNDTHINKING, ALERT_BLE_MFR_ID) were
+// caught reliably. Two independent static code reviews of the matching
+// logic and of the tester's frame construction found no bug, so the next
+// question is empirical, not theoretical:
+//
+//     did the frame/advertisement physically ARRIVE at the radio at all,
+//     or did it arrive and fail to MATCH?
+//
+// The counters below answer exactly that, and are split into two families:
+//
+//   1. ARRIVAL counters (framesTotal / framesMgmt / framesData /
+//      mgmtSubtype[] / framesPerChannel[]) — incremented BEFORE any OUI or
+//      SSID matching runs, so they are completely independent of the
+//      pattern tables. If a scenario's frames never appear here, the
+//      problem is RF/timing (or the tester never actually transmitted),
+//      NOT the matching code.
+//   2. GATE counters (candAddr2 / candWildcard / candAddr1 / candAddr3 /
+//      candSsid / candLaaSsid / seqMacPairs / bleCand*) — incremented at
+//      the exact point each gate's final condition passes, immediately
+//      before its enqueueAlert() call. A non-zero gate counter with no
+//      matching DETECT-* line means the alert was queued but lost
+//      downstream; a zero gate counter with non-zero arrival counts means
+//      the frame arrived and failed to match.
+//
+// The queue counters close the last gap: enqueueAlert() silently returns
+// when the ring buffer is full, which would otherwise be an invisible way
+// for a matched detection to vanish between matching and logging
+// (enqueueOk vs enqueueDrop vs drained).
+//
+// Reported by printSniffStats() from the 30 s heartbeat in
+// printHeartbeat(), so a single serial capture is enough to interpret.
+// See .clinerules/04-detection-methods.md ("Known open issue") for the
+// investigation this feeds.
+//
+// CONCURRENCY: each counter is single-writer (the WiFi promiscuous
+// callback for the WiFi counters, the NimBLE host task for the BLE
+// counters) and single-reader (loop()), so plain volatile 32-bit
+// increments are used rather than portMUX — the promiscuous callback must
+// stay fast. A torn read is at worst a cosmetic glitch in one heartbeat
+// line, never a correctness issue for a diagnostic. No Serial/malloc
+// happens here (see rule 01-clean-code's ISR-context restriction).
+//
+// Set FY_SNIFF_STATS to 0 to compile all of this out.
+#define FY_SNIFF_STATS 1
+
+#if FY_SNIFF_STATS
+typedef struct {
+  // ---- arrival (independent of all matching logic) ----
+  volatile uint32_t framesTotal;           // reached matching (post hard filters)
+  volatile uint32_t framesBadLen;          // dropped: < 802.11 MAC header
+  volatile uint32_t framesWeakRssi;        // dropped: below RSSI_MIN
+  volatile uint32_t framesMgmt;
+  volatile uint32_t framesData;
+  volatile uint32_t mgmtSubtype[16];       // [4]=probe req [5]=probe resp [8]=beacon
+  volatile uint32_t framesPerChannel[16];  // [0] unused; >14 (C5 5 GHz) not indexed
+  // ---- gate (incremented right before each enqueueAlert()) ----
+  volatile uint32_t candAddr2;             // OUI hit on addr2 (any tier)
+  volatile uint32_t candWildcard;          // wildcard probe request
+  volatile uint32_t candAddr1;             // OUI hit on addr1
+  volatile uint32_t candAddr3;             // OUI hit on addr3
+  volatile uint32_t candSsid;              // SSID keyword hit, GA MAC
+  volatile uint32_t candLaaSsid;           // SSID keyword hit, LAA MAC
+  volatile uint32_t seqMacPairs;           // checkSeqMac() pair bonus applied
+#if defined(ENABLE_BLE_SCAN) && ENABLE_BLE_SCAN
+  volatile uint32_t bleAdvTotal;           // advertisements handed to the matcher
+  volatile uint32_t bleCandMfrId;
+  volatile uint32_t bleCandUuid;
+  volatile uint32_t bleCandName;
+#endif
+  // ---- alert queue (closes the "matched but vanished" gap) ----
+  volatile uint32_t enqueueOk;
+  volatile uint32_t enqueueDrop;           // ring buffer full — previously silent
+  volatile uint32_t drained;
+} FySniffStats;
+
+static FySniffStats fyStats;
+
+// Counter bump: deliberately a compound assignment, NOT `++`.
+//
+// Increment/decrement of a volatile-qualified object is deprecated in C++20
+// (P1152R4, diagnosed as -Wvolatile), and this project's ESP32 Arduino core
+// compiles main.cpp as gnu++20 — so `fyStats.x++` emits a deprecation warning
+// at every one of the ~23 counter sites below (confirmed: a clean build of
+// the pre-instrumentation tree had zero -Wvolatile warnings, and these were
+// the only new warnings introduced). Compound assignment is *not* deprecated
+// and has identical semantics for a scalar counter, so all bumps go through
+// this macro — which also documents the reason at each call site.
+#define FY_STAT_BUMP(x) ((x) += 1)
+#endif  // FY_SNIFF_STATS
+
+// ============================================================
 // ALERT QUEUE  (callback → loop, avoids Serial in WiFi task)
 // ============================================================
 //
@@ -421,7 +520,17 @@ static void IRAM_ATTR enqueueAlert(AlertType type, const uint8_t* mac, int8_t rs
                                     uint8_t confidence) {
   portENTER_CRITICAL_ISR(&queueMux);
   size_t next = (alertHead + 1) % ALERT_QUEUE_SIZE;
-  if (next == alertTail) { portEXIT_CRITICAL_ISR(&queueMux); return; }
+  // Ring buffer full: this return used to be completely silent, which made a
+  // matched detection indistinguishable from "never matched at all" in the
+  // serial log. We can't Serial.print from the promiscuous callback, so count
+  // it and surface it in the heartbeat (see SNIFF STATS above).
+  if (next == alertTail) {
+#if FY_SNIFF_STATS
+    FY_STAT_BUMP(fyStats.enqueueDrop);
+#endif
+    portEXIT_CRITICAL_ISR(&queueMux);
+    return;
+  }
 
   AlertEntry* e = (AlertEntry*)&alertQueue[alertHead];
   e->type       = type;
@@ -436,6 +545,9 @@ static void IRAM_ATTR enqueueAlert(AlertType type, const uint8_t* mac, int8_t rs
   if (kind) { strncpy((char*)e->frameKind, kind, 11); ((char*)e->frameKind)[11] = '\0'; }
   else       { ((char*)e->frameKind)[0] = '\0'; }
 
+#if FY_SNIFF_STATS
+  FY_STAT_BUMP(fyStats.enqueueOk);
+#endif
   alertHead = next;
   portEXIT_CRITICAL_ISR(&queueMux);
 }
@@ -520,6 +632,13 @@ static bool bleNameContains(const char* name, const char* needle) {
 static void fyProcessBLEAdvertisedDevice(NimBLEAdvertisedDevice* adv) {
 
   if (!adv) return;
+#if FY_SNIFF_STATS
+  // Arrival counter for BLE: incremented for EVERY advertisement handed to
+  // the matcher, before any mfr-ID/UUID/name check runs, so a zero here means
+  // the tester's advertisements never reached the scanner at all (NimBLE
+  // scan-window/interval mismatch), not that matching failed.
+  FY_STAT_BUMP(fyStats.bleAdvTotal);
+#endif
   int8_t rssi = (int8_t)adv->getRSSI();
   bool      matched       = false;
   AlertType bleAlertType  = ALERT_BLE_NAME;   // overwritten below once matched
@@ -580,6 +699,16 @@ static void fyProcessBLEAdvertisedDevice(NimBLEAdvertisedDevice* adv) {
   if (matched) {
     g_bleFlockLastSeen = (uint32_t)millis();
     g_bleFlockRssi     = rssi;
+
+#if FY_SNIFF_STATS
+    // Gate counter per BLE match type, mirroring the WiFi cand* counters.
+    switch (bleAlertType) {
+      case ALERT_BLE_MFR_ID:     FY_STAT_BUMP(fyStats.bleCandMfrId); break;
+      case ALERT_BLE_RAVEN_UUID: FY_STAT_BUMP(fyStats.bleCandUuid);  break;
+      case ALERT_BLE_NAME:       FY_STAT_BUMP(fyStats.bleCandName);  break;
+      default: break;
+    }
+#endif
 
     // FIX (root cause of "it still isn't alerting"): a BLE-only match used
     // to stop here — it only recorded the timestamp above as a confidence
@@ -1133,10 +1262,68 @@ static void updateChannelMode() {
 #endif
 }
 
+#if FY_SNIFF_STATS
+// Dumps the arrival/gate/queue counters (see the SNIFF STATS section above)
+// once per heartbeat. Kept on its own short "[flockyou] stats ..." lines so
+// the existing "[flockyou] scanning ..." heartbeat line — and anything
+// (scripts, docs, the log-strip on M5Stack Basic/Core2) that matches on it —
+// keeps working unchanged.
+static void printSniffStats() {
+  // Management frames that are neither beacon(8), probe-req(4) nor probe-resp(5).
+  unsigned long mgmtOther = 0;
+  for (int i = 0; i < 16; i++) {
+    if (i == 4 || i == 5 || i == 8) continue;
+    mgmtOther += (unsigned long)fyStats.mgmtSubtype[i];
+  }
+
+  // ARRIVAL line — completely independent of every OUI/SSID/BLE pattern table.
+  dualPrintf("[flockyou] stats rx=%lu badlen=%lu weakrssi=%lu mgmt=%lu data=%lu"
+             " beacon=%lu preq=%lu presp=%lu other=%lu ch1=%lu ch6=%lu ch11=%lu\n",
+             (unsigned long)fyStats.framesTotal,
+             (unsigned long)fyStats.framesBadLen,
+             (unsigned long)fyStats.framesWeakRssi,
+             (unsigned long)fyStats.framesMgmt,
+             (unsigned long)fyStats.framesData,
+             (unsigned long)fyStats.mgmtSubtype[8],
+             (unsigned long)fyStats.mgmtSubtype[4],
+             (unsigned long)fyStats.mgmtSubtype[5],
+             mgmtOther,
+             (unsigned long)fyStats.framesPerChannel[1],
+             (unsigned long)fyStats.framesPerChannel[6],
+             (unsigned long)fyStats.framesPerChannel[11]);
+
+  // GATE + QUEUE line — how far frames got through matching, and whether any
+  // matched alert was lost between matching and logging.
+  dualPrintf("[flockyou] stats gate a2=%lu wild=%lu a1=%lu a3=%lu ssid=%lu"
+             " laa=%lu seqpair=%lu | queue ok=%lu drop=%lu drained=%lu\n",
+             (unsigned long)fyStats.candAddr2,
+             (unsigned long)fyStats.candWildcard,
+             (unsigned long)fyStats.candAddr1,
+             (unsigned long)fyStats.candAddr3,
+             (unsigned long)fyStats.candSsid,
+             (unsigned long)fyStats.candLaaSsid,
+             (unsigned long)fyStats.seqMacPairs,
+             (unsigned long)fyStats.enqueueOk,
+             (unsigned long)fyStats.enqueueDrop,
+             (unsigned long)fyStats.drained);
+
+#if defined(ENABLE_BLE_SCAN) && ENABLE_BLE_SCAN
+  dualPrintf("[flockyou] stats ble adv=%lu mfr=%lu uuid=%lu name=%lu\n",
+             (unsigned long)fyStats.bleAdvTotal,
+             (unsigned long)fyStats.bleCandMfrId,
+             (unsigned long)fyStats.bleCandUuid,
+             (unsigned long)fyStats.bleCandName);
+#endif
+}
+#endif  // FY_SNIFF_STATS
+
 static void printHeartbeat() {
   if (millis() - lastHeartbeat >= HEARTBEAT_MS) {
     dualPrintf("[flockyou] scanning (ch=%u mode=%s det=%d)\n",
                   currentChannel, channelModeName(), fyDetCount);
+#if FY_SNIFF_STATS
+    printSniffStats();
+#endif
     lastHeartbeat = millis();
     // C5's periodic scanning-screen redraw now happens inside the UI task's
     // own HEARTBEAT_MS gate (ui_task.h) — no direct display call here.
@@ -1556,12 +1743,50 @@ static void IRAM_ATTR wifiSniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
   return;
 #endif
 
+  // ── ARRIVAL instrumentation (runs BEFORE any matching — see SNIFF STATS) ──
   wifi_promiscuous_pkt_t*   pkt = (wifi_promiscuous_pkt_t*)buf;
-  if (pkt->rx_ctrl.sig_len < sizeof(wifi_ieee80211_mac_hdr_t)) return;
+  if (pkt->rx_ctrl.sig_len < sizeof(wifi_ieee80211_mac_hdr_t)) {
+#if FY_SNIFF_STATS
+    FY_STAT_BUMP(fyStats.framesBadLen);
+#endif
+    return;
+  }
   wifi_ieee80211_mac_hdr_t* hdr = (wifi_ieee80211_mac_hdr_t*)pkt->payload;
   int8_t rssi = pkt->rx_ctrl.rssi;
-  if (rssi < RSSI_MIN) return;
+  if (rssi < RSSI_MIN) {
+#if FY_SNIFF_STATS
+    FY_STAT_BUMP(fyStats.framesWeakRssi);
+#endif
+    return;
+  }
   uint8_t ch = (uint8_t)pkt->rx_ctrl.channel;
+
+  // "Did the frame physically arrive?" counters. Recorded before the OUI/SSID
+  // tables are consulted, so a zero for a given scenario proves its frames
+  // never reached the matcher (RF/timing/TX failure) rather than failing to
+  // match. All of them are deliberately counted *after* the same hard filters
+  // the matching path applies (length, RSSI), which keeps the reported
+  // relationship exact and easy to read: rx == mgmt + data, and every
+  // management frame that reached matching lands in exactly one subtype slot
+  // (4=probe req, 5=probe resp, 8=beacon, everything else folded into
+  // "other" by printSniffStats()).
+#if FY_SNIFF_STATS
+  FY_STAT_BUMP(fyStats.framesTotal);
+  if (type == WIFI_PKT_MGMT) {
+    FY_STAT_BUMP(fyStats.framesMgmt);
+    // Subtype is indexed off the frame-control field rather than the
+    // driver-supplied `type` on purpose — a disagreement between the two
+    // would itself be a finding.
+    uint8_t fc0 = hdr->frame_ctrl & 0xFF;
+    if (((fc0 >> 2) & 0x03) == 0)            // ftype 0 = management
+      FY_STAT_BUMP(fyStats.mgmtSubtype[(fc0 >> 4) & 0x0F]);
+  } else {
+    FY_STAT_BUMP(fyStats.framesData);
+  }
+  // Channel histogram only indexes 1..14: the ESP32-C5 dual-band build also
+  // hops 149/157, which would otherwise alias into low channel slots.
+  if (ch <= 14) FY_STAT_BUMP(fyStats.framesPerChannel[ch]);
+#endif
 
 #if TESTING_MODE
   enqueueAlert(ALERT_OUI_ADDR2, hdr->addr2, rssi, ch, nullptr, "test", 50);
@@ -1594,8 +1819,15 @@ static void IRAM_ATTR wifiSniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
           if (r == 1) {
             uint8_t conf = computeConfidence(ALERT_WILDCARD_PROBE, hdr->addr2, rssi, nullptr);
             uint8_t pairCh = 0;
-            if (checkSeqMac(hdr->addr2, ch, &pairCh))
+            if (checkSeqMac(hdr->addr2, ch, &pairCh)) {
               conf = applySeqMacBonus(conf);
+#if FY_SNIFF_STATS
+              FY_STAT_BUMP(fyStats.seqMacPairs);
+#endif
+            }
+#if FY_SNIFF_STATS
+            FY_STAT_BUMP(fyStats.candWildcard);
+#endif
             enqueueAlert(ALERT_WILDCARD_PROBE, hdr->addr2, rssi, ch,
                          nullptr, "probe_req", conf);
             emitted = true;
@@ -1607,8 +1839,15 @@ static void IRAM_ATTR wifiSniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
                           isMfr ? ALERT_OUI_MFR       : ALERT_OUI_ADDR2;
         uint8_t conf = computeConfidence(atype, hdr->addr2, rssi, nullptr);
         uint8_t pairCh = 0;
-        if (checkSeqMac(hdr->addr2, ch, &pairCh))
+        if (checkSeqMac(hdr->addr2, ch, &pairCh)) {
           conf = applySeqMacBonus(conf);
+#if FY_SNIFF_STATS
+          FY_STAT_BUMP(fyStats.seqMacPairs);
+#endif
+        }
+#if FY_SNIFF_STATS
+        FY_STAT_BUMP(fyStats.candAddr2);
+#endif
         enqueueAlert(atype, hdr->addr2, rssi, ch, nullptr, "addr2", conf);
       }
     }
@@ -1620,6 +1859,9 @@ static void IRAM_ATTR wifiSniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
 #if CHECK_ADDR1
   if (!isMulticast(hdr->addr1) && matchOuiRaw(hdr->addr1)) {
     uint8_t conf = computeConfidence(ALERT_OUI_ADDR1, hdr->addr1, rssi, nullptr);
+#if FY_SNIFF_STATS
+    FY_STAT_BUMP(fyStats.candAddr1);
+#endif
     enqueueAlert(ALERT_OUI_ADDR1, hdr->addr1, rssi, ch, nullptr, "addr1", conf);
   }
 #endif
@@ -1628,6 +1870,9 @@ static void IRAM_ATTR wifiSniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
 #if CHECK_ADDR3
   if (type == WIFI_PKT_MGMT && !isMulticast(hdr->addr3) && matchOuiRaw(hdr->addr3)) {
     uint8_t conf = computeConfidence(ALERT_OUI_ADDR3, hdr->addr3, rssi, nullptr);
+#if FY_SNIFF_STATS
+    FY_STAT_BUMP(fyStats.candAddr3);
+#endif
     enqueueAlert(ALERT_OUI_ADDR3, hdr->addr3, rssi, ch, nullptr, "addr3", conf);
   }
 #endif
@@ -1692,13 +1937,23 @@ static void IRAM_ATTR wifiSniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
               // cameras.  Run sequential-MAC check for the :DE/:DF pair bonus.
               uint8_t conf = computeConfidence(ALERT_LAA_SSID, hdr->addr2, rssi, ssid);
               uint8_t pairCh = 0;
-              if (checkSeqMac(hdr->addr2, ch, &pairCh))
+              if (checkSeqMac(hdr->addr2, ch, &pairCh)) {
                 conf = applySeqMacBonus(conf);
+#if FY_SNIFF_STATS
+                FY_STAT_BUMP(fyStats.seqMacPairs);
+#endif
+              }
+#if FY_SNIFF_STATS
+              FY_STAT_BUMP(fyStats.candLaaSsid);
+#endif
               enqueueAlert(ALERT_LAA_SSID, hdr->addr2, rssi, ch,
                            ssid, frameKind, conf);
             } else {
               // Globally-administered MAC with Flock SSID (fully deployed cam)
               uint8_t conf = computeConfidence(ALERT_SSID, hdr->addr2, rssi, ssid);
+#if FY_SNIFF_STATS
+              FY_STAT_BUMP(fyStats.candSsid);
+#endif
               enqueueAlert(ALERT_SSID, hdr->addr2, rssi, ch,
                            ssid, frameKind, conf);
             }
@@ -1723,6 +1978,10 @@ static void drainAlertQueue() {
     memcpy(&e, (const void*)&alertQueue[alertTail], sizeof(AlertEntry));
     alertTail = (alertTail + 1) % ALERT_QUEUE_SIZE;
     portEXIT_CRITICAL(&queueMux);
+
+#if FY_SNIFF_STATS
+    FY_STAT_BUMP(fyStats.drained);
+#endif
 
     char macStr[18];
     macToStr(e.mac, macStr, sizeof(macStr));

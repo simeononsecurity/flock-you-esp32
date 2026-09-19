@@ -189,15 +189,53 @@ static void reshuffleScenarios() {
 // detector's 250 ms-dwell hop cycle across {11,6,1})
 // ============================================================
 
+// Transmission failures are COUNTED and reported, never ignored.
+//
+// This used to swallow esp_wifi_80211_tx()'s return value entirely, which
+// made a scenario whose frames the driver silently refused to inject look —
+// from the detector's side — exactly like a detector-side matching or RF
+// miss. That ambiguity is precisely what .clinerules/04-detection-methods.md's
+// open "some alert types under-detected in cross-device testing" issue needed
+// resolved, so the tester must be able to state definitively whether it
+// actually put the frames on the air. (Rule 01-clean-code: never silently
+// swallow an error return value.)
+//
+// esp_wifi_set_channel() is checked too: a failed channel switch means the
+// {1,6,11} sweep silently misses a channel, which would (correctly) look like
+// the detector missing that scenario.
+#define TX_ERR_REPORT_MS 1000UL
+static uint32_t      txErrCount      = 0;    // total failed esp_wifi_80211_tx()
+static uint32_t      chErrCount      = 0;    // total failed esp_wifi_set_channel()
+static esp_err_t     txLastErr       = ESP_OK;
+static esp_err_t     chLastErr       = ESP_OK;
+static unsigned long txLastErrReport = 0;
+
 static void txSweep(uint8_t* frame, size_t len) {
   for (int pass = 0; pass < SWEEP_PASSES; pass++) {
     for (int c = 0; c < SWEEP_CHANNELS_COUNT; c++) {
-      esp_wifi_set_channel(sweepChannels[c], WIFI_SECOND_CHAN_NONE);
+      esp_err_t cerr = esp_wifi_set_channel(sweepChannels[c], WIFI_SECOND_CHAN_NONE);
+      if (cerr != ESP_OK) { chErrCount++; chLastErr = cerr; }
       for (int b = 0; b < BURST_FRAMES_PER_CH; b++) {
-        esp_wifi_80211_tx(WIFI_IF_STA, frame, (int)len, false);
+        esp_err_t err = esp_wifi_80211_tx(WIFI_IF_STA, frame, (int)len, false);
+        if (err != ESP_OK) { txErrCount++; txLastErr = err; }
         delay(BURST_GAP_MS);
       }
     }
+  }
+
+  // Rate-limited so an entirely-refused scenario reports once instead of 72
+  // times per sweep. Serial is safe here — txSweep() runs from loop(), not
+  // from an ISR. Counts are cumulative, so repeated lines show the growth.
+  unsigned long now = millis();
+  if ((txErrCount || chErrCount) && (now - txLastErrReport) >= TX_ERR_REPORT_MS) {
+    txLastErrReport = now;
+    Serial.printf("[beacon] WARN tx failed %lu time(s) (last err=0x%X %s), "
+                  "set_channel failed %lu time(s) (last err=0x%X %s) -- "
+                  "scenario may not have gone out over the air\n",
+                  (unsigned long)txErrCount, (unsigned)txLastErr,
+                  esp_err_to_name(txLastErr),
+                  (unsigned long)chErrCount, (unsigned)chLastErr,
+                  esp_err_to_name(chLastErr));
   }
 }
 

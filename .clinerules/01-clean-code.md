@@ -77,6 +77,17 @@ tooling (`api/*.py`) in this repository.
   that isn't safe from an interrupt/foreign-task context. Push data through
   the existing lock-free alert queue (`enqueueAlert()`/`drainAlertQueue()`)
   instead.
+- **Never `++`/`--` a `volatile` counter — use `+= 1` instead.** This
+  project's ESP32 Arduino core compiles as gnu++20, where increment/
+  decrement of a volatile-qualified object is deprecated (P1152R4,
+  diagnosed as `-Wvolatile`). Adding the `FY_SNIFF_STATS` counters to
+  `main.cpp` with `++` produced 23 of these warnings in one commit; the
+  pre-existing `ui_task.h`'s `g_uiAlertSeq++` had been emitting one all
+  along. Compound assignment is *not* deprecated and is semantically
+  identical for a scalar counter — `main.cpp` routes every counter bump
+  through its `FY_STAT_BUMP()` macro for exactly this reason. Verify any
+  new counter by checking that a build of the env that compiles the file
+  reports **zero** `warning:` lines, not just zero errors.
 
 ## Python (`api/`)
 

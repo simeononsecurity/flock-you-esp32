@@ -72,7 +72,51 @@ without generating alert fatigue.
   `SWEEP_PASSES` times (currently 6, ~576 ms total burst) so a single
   scenario firing is long enough to overlap a real detector's channel-hop
   dwell window — see "WiFi channel hopping & channel lock" below for why
-  this matters.
+  this matters. `txSweep()` also **counts and reports** every failed
+  `esp_wifi_80211_tx()`/`esp_wifi_set_channel()` call (rate-limited to one
+  `[beacon] WARN ...` line per second) instead of ignoring the return
+  values — until this was added the tester could not distinguish "the
+  detector missed my frames" from "the driver never put my frames on the
+  air at all", which is one of the two possibilities the diagnosis below
+  has to rule out.
+
+## Arrival-vs-match diagnostics (`FY_SNIFF_STATS` in `main.cpp`)
+
+`main.cpp` carries cheap, always-on diagnostic counters (compiled out by
+setting `FY_SNIFF_STATS` to 0) reported as extra `[flockyou] stats ...`
+lines by the 30 s heartbeat in `printHeartbeat()`. They exist specifically
+to answer the question the static code reviews could not: **did a frame
+physically arrive at the radio, or did it arrive and fail to match?**
+
+- **ARRIVAL counters** (`rx`/`badlen`/`weakrssi`/`mgmt`/`data`/
+  `beacon`/`preq`/`presp`/`other`/`ch1`/`ch6`/`ch11`) are incremented at
+  the top of `wifiSniffer()` **before any OUI/SSID table is consulted**,
+  so they cannot be affected by matching logic:
+  - `rx=0` during a scenario burst → frames never reached the callback
+    (RF/timing, TX refused by the driver, or wrong channel) — check the
+    tester's `[beacon] WARN` lines too.
+  - frames arriving **only** on the wrong `chN` → the dwell/overlap
+    timing issue described under "WiFi channel hopping".
+  - `weakrssi` climbing → the frames arrived but were below `RSSI_MIN`.
+  - `badlen` climbing → truncated/malformed captures.
+- **GATE counters** (`gate a2/wild/a1/a3/ssid/laa/seqpair`) are
+  incremented at the exact point each gate's final condition passes,
+  immediately before its `enqueueAlert()` call:
+  - arrival counts non-zero **and** gate count zero → the frame arrived
+    but failed to match (look at the pattern table / scenario MAC
+    construction, e.g. `pickRandomOuiGA()`).
+  - gate count non-zero **and** no `DETECT-*` line → the alert was
+    enqueued but lost downstream (check the queue counters).
+- **QUEUE counters** (`queue ok/drop/drained`) close the last gap:
+  `enqueueAlert()` returns silently when the 32-slot ring buffer is full,
+  which was previously an invisible way for a `matched` detection to
+  vanish before it could be logged. `drop` must stay 0; a rising `drop`
+  means the alert rate outran `loop()`'s drain.
+- **`stats ble adv/mfr/uuid/name`** is the BLE equivalent: `adv` counts
+  every advertisement handed to `fyProcessBLEAdvertisedDevice()` (before
+  matching). `adv=0` while the tester is advertising means the
+  advertisements never reached the scanner (NimBLE scan window/interval
+  mismatch), not a matching failure.
 
 ## WiFi channel hopping & channel lock
 
@@ -145,10 +189,25 @@ instrumented/tested:
   as-yet-unfound edge case in `beacon_test.cpp`'s `pickRandomOuiGA()` or
   the hardcoded LAA MAC/SSID in scenario5, or a real-world timing
   interaction not reproduced by static code review.
-- Recommended next diagnostic step for a future session: add temporary
-  frame/advertisement-arrival instrumentation (e.g. a promiscuous-mode
-  packet counter surfaced via the periodic heartbeat log, independent of
-  the matching logic) to distinguish "frame never physically arrived at
-  the radio" from "frame arrived but failed to match" — this would
-  conclusively separate a timing/RF root cause from a logic bug without
-  further blind code review.
+- **Instrumentation is now in place** (this replaces the earlier
+  "recommended next diagnostic step"): the `FY_SNIFF_STATS` counters in
+  `main.cpp` plus `beacon_test.cpp`'s `[beacon] WARN` TX-error reporting
+  (both documented above) separate these cases directly. Procedure for the
+  next hardware session:
+  1. Flash `m5atom-lite-beacon` to board A and a `-ble` detector build
+     (e.g. `m5atom-lite-ble`) to board B; capture B's serial output from
+     boot onward for at least 2-3 minutes so several 30 s heartbeat
+     windows and every scenario in A's rotation are covered.
+  2. For each scenario A reports firing, compare against B's next `stats`
+     lines: growth in `rx`/`presp`/`preq` (or `stats ble adv`) proves the
+     frames arrived; a *flat* corresponding `gate` counter alongside
+     arrival growth proves a matching failure; a rising `queue drop`
+     proves the alert was enqueued and lost downstream.
+  3. Cross-check A's log for `[beacon] WARN` lines in the same window. If
+     the driver refused the injection then B's arrival counters stay flat
+     and the fault is on the **tester** side, not in `wifiSniffer()`/
+     `fyProcessBLEAdvertisedDevice()`.
+  Status: **not yet interpreted from a hardware capture** — the counters
+  were added with no board attached, so they are build-verified only.
+  Treat the candidate causes below as still-open until a capture says
+  otherwise.
