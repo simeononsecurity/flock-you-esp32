@@ -141,3 +141,22 @@ before considering any firmware change complete.
   of this project's existing style (e.g. the `NimBLEScan::start()`
   overload-resolution fix). Future debugging sessions should be able to
   `git blame`/`git log -p` their way to the "why" without re-deriving it.
+- **Validate doc links and anchors after any README/docs edit.** This repo
+  has accumulated links to files that never existed in its history
+  (`SETUP_INSTRUCTIONS.md` linked 4×, `../BUSINESS_ANALYSIS.md`,
+  `/hardware/assembly_photos/`), so "it's just docs, it can't break" is
+  false here — a dead setup link is what a brand-new user clicks first.
+  Check every tracked `*.md` for relative links whose target does not exist,
+  and every `#fragment` against the real heading set. Two traps worth
+  knowing:
+  - **Anchor slugs are not the heading text.** GitHub strips emoji but
+    keeps the following space, so `## 🐛 Troubleshooting` slugs to
+    `#-troubleshooting` (leading hyphen). `README.md`'s own troubleshooting
+    link was silently broken this way. Slugify a heading as: lowercase →
+    drop HTML tags → drop everything that isn't word-char/hyphen/space →
+    spaces to hyphens.
+  - **Skip `http(s)`/`mailto` targets and anchor-only links** when checking
+    file existence, or you'll get noise instead of signal.
+  A ~20-line Python pass over `git ls-files '*.md'` covers the whole repo;
+  it caught a real broken anchor in the same change that introduced the
+  link-checking idea, so it pays for itself immediately.

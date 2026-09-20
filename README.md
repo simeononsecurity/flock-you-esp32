@@ -11,10 +11,9 @@ Ported to standard ESP32 hardware for maximum accessibility and cost savings.
 
 ## 🚀 Quick Links
 
-- **[Setup Instructions](SETUP_INSTRUCTIONS.md)** - Get started in 3 steps
 - **[Solderless Build Guide](SOLDERLESS_BUILD_GUIDE.md)** - No soldering required! ($9-11 total)
-- **[Business Analysis](../BUSINESS_ANALYSIS.md)** - Market opportunity & financials
-- **[Porting Guide](../ESP32_PORTING_GUIDE.md)** - Technical documentation
+- **[PCB Design Package](hardware/pcb/README.md)** - Custom board: schematic, BOM, assembly
+- **[Detection Methods](.clinerules/04-detection-methods.md)** - Every detection path, with scoring and test tooling
 
 ---
 
@@ -22,7 +21,7 @@ Ported to standard ESP32 hardware for maximum accessibility and cost savings.
 
 This package contains everything you need to build and deploy your own Flock-You detector:
 
-### 📁 Firmware (`/firmware`)
+### 📁 Firmware (repo root)
 - **main.cpp** - Modified for ESP32 (GPIO 25, 2, 17)
 - **platformio.ini** - ESP32 DevKit configuration
 - **partitions_4mb.csv** - Optimized for 4MB flash
@@ -39,10 +38,10 @@ This package contains everything you need to build and deploy your own Flock-You
 [hardware/README.md](hardware/README.md) for why.
 
 ### 📚 Documentation
-- Complete user manuals
-- Troubleshooting guides
-- Business planning resources
-- Technical specifications
+- **[Solderless Build Guide](SOLDERLESS_BUILD_GUIDE.md)** - Assembly, testing, troubleshooting
+- **[PCB Design Package](hardware/pcb/README.md)** - Schematic, BOM, assembly guide
+- **[Detection Methods](.clinerules/04-detection-methods.md)** - Detection paths and confidence scoring
+- **[Firmware-Derived Signatures](datasets/firmware_derived_signatures.md)** - Signature provenance
 
 ---
 
@@ -66,7 +65,6 @@ This package contains everything you need to build and deploy your own Flock-You
 - ESP32 DevKit + USB cable
 - Onboard LED provides visual feedback
 - Perfect for testing or silent operation
-- [Instructions](SETUP_INSTRUCTIONS.md#minimal-led-only---5)
 
 ### Option 2: Breadboard Build (Recommended)
 **Cost:** $9-11 | **Time:** 10 minutes | **Difficulty:** ⭐⭐☆☆☆
@@ -447,7 +445,7 @@ pio run -e lilygo-t-dongle-c5-ble -t upload
 - Verify partition file exists
 - Clean build: `pio run -t clean`
 
-**[Full Troubleshooting Guide](SOLDERLESS_BUILD_GUIDE.md#troubleshooting)**
+**[Full Troubleshooting Guide](SOLDERLESS_BUILD_GUIDE.md#-troubleshooting)**
 
 ---
 
@@ -546,11 +544,12 @@ This project is licensed **CC-BY-SA 4.0**:
 **You're 2 steps away from detecting surveillance:**
 
 1. **[Buy hardware](https://amazon.com/s?k=ESP32+DevKit)** → $5-11
-2. **[Flash firmware](SETUP_INSTRUCTIONS.md)** → 10 minutes
+2. **Flash the firmware** → 10 minutes (commands under
+   [Quick Start](#2-flash-firmware) above)
 
 **Questions?** Check the docs or open an issue!
 
-**Ready?** [Start Building →](SETUP_INSTRUCTIONS.md)
+**Ready?** [Start Building →](SOLDERLESS_BUILD_GUIDE.md)
 
 ---
 

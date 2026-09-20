@@ -420,16 +420,6 @@ For portable use without USB:
 
 ---
 
-## 📷 Visual Assembly Guide
-
-See the `/hardware/assembly_photos/` folder for:
-- High-res photos of each assembly step
-- Close-ups of correct pin connections
-- Common mistake photos (what NOT to do)
-- Finished build examples
-
----
-
 ## ✅ Success!
 
 You now have a **fully functional Flock-You detector** without touching a soldering iron!
