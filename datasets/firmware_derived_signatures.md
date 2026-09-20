@@ -74,10 +74,14 @@ means a Flock unit (or its battery) is physically nearby.
 
 ## Bluetooth Classic (host-side corroboration only)
 
-The ESP32's NimBLE stack cannot do Classic BT, so these signals are documented
-for host-side companion tooling rather than the firmware matcher. They are
-generic Qualcomm/Android defaults and only meaningful *alongside* one of the
-BLE signatures above.
+The ESP32's NimBLE stack cannot do Classic BT, so our firmware can never emit
+these — they reach the dashboard only from host-side tooling or imported
+captures. They are still **tagged** by `api/flockyou.py`'s
+`firmware_signature_matches()` (`classic_bt_name:…`,
+`classic_bt_sdp_did:qualcomm_001d_1200`) so an imported record carries the same
+evidence labels as anything else, and because they are useful *next to* a BLE
+hit. Both names are generic Qualcomm/Android defaults, so treat them as
+corroborating signals only — never standalone detections.
 
 | Signature | Internal source |
 |---|---|

@@ -63,6 +63,24 @@ A Flask-based web dashboard for real-time monitoring and analysis of Flock Safet
 - **KML Export**: Downloads a KML file for viewing in Google Earth
 - **GPS Data**: Both formats include GPS coordinates when available
 
+### Firmware-signature tagging
+
+Each detection is tagged with the signatures from the Flock camera firmware
+image that it matched (`datasets/firmware_derived_signatures.md`):
+
+- **`matched_signatures`** — ordered list of tags, e.g.
+  `oui:b4:1e:52`, `mac:fw_default`, `ssid_keyword:penguin`,
+  `gatt:flock_accessory`, `gatt:raven_service:0x3101`,
+  `ble_mfg:0x09c8`, `ble_name:penguin_serial`,
+  `classic_bt_name:msm8953_32`.
+- **`firmware_sig`** — `True` when at least one of them matched.
+
+Tags are unioned onto the record and never removed, so a device first seen
+without a firmware-signature hit and confirmed later still reads as
+firmware-matched. Both fields are columns in the CSV export. The community
+field-research OUIs (@NitekryDPaul / DeFlockJoplin) are deliberately *not*
+tagged — this tag set means "evidence found in the camera firmware image".
+
 ## API Endpoints
 
 ### Detection Management

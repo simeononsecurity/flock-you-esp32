@@ -23,6 +23,13 @@ idf_component.yml.orig
 __pycache__/
 *.pyc
 
+# Flask API runtime output. The README's quick start runs from api/, so these
+# land there: data/ holds the detection store + settings, exports/ holds the
+# CSV/JSON/KML exports. Both contain field detection data — never
+# source-controlled.
+api/data/
+api/exports/
+
 # SPIFFS runtime session files (written by firmware to the ESP32 filesystem,
 # never source-controlled — they contain field detection data)
 session.json

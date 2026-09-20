@@ -132,6 +132,25 @@ FIRMWARE_BLE_GATT_UUIDS = (
 
 FIRMWARE_RAVEN_SVC_RANGE = (0x3100, 0x3500)
 
+# Classic-Bluetooth corroboration (same firmware dump).
+#
+# HOST-SIDE ONLY: the ESP32 runs NimBLE, which cannot do Classic BT at all, so
+# these can never arrive over the serial link from our own firmware — they come
+# from host-side tooling or from imported/replayed captures. They are tagged
+# anyway so an imported record carries the same evidence labels as anything
+# else, and because they are genuinely useful *next to* a BLE hit: a device
+# advertising the MSM8953 platform's default BT name, or an SDP Device-ID record
+# naming Qualcomm vendor 0x001D / product 0x1200 (`bt_did.conf`), is the camera's
+# Bluetooth stack showing through.
+#
+# Low specificity on their own (both names are generic platform / Android
+# defaults) — corroborating signals, never standalone detections.
+CLASSIC_BT_DEVICE_NAMES = ("msm8953_32", "android")
+CLASSIC_BT_SDP_DEVICE_ID = {
+    "vendor_id": 0x001D,   # Qualcomm
+    "product_id": 0x1200,
+}
+
 _BLE_NAME_PATTERNS = (
     (re.compile(r"^penguin-\d{10}$", re.IGNORECASE), "ble_name:penguin_serial"),
     (re.compile(r"^\d{10}$"), "ble_name:bare_serial"),
@@ -250,6 +269,19 @@ def firmware_signature_matches(data: dict) -> list:
         for keyword in ("penguin", "fs ext battery", "dfutarg"):
             if keyword in lowered_name:
                 tags.append(f"ble_name:{keyword.replace(' ', '_')}")
+
+    # Classic-Bluetooth corroboration — text form and SDP Device-ID. See the
+    # CLASSIC_BT_* constants for why this is tagged even though our firmware
+    # can't produce it.
+    if name:
+        lowered_name = str(name).strip().lower()
+        if lowered_name in CLASSIC_BT_DEVICE_NAMES:
+            tags.append(f"classic_bt_name:{lowered_name}")
+    vendor = _parse_int_flexible(data.get("sdp_vendor_id", data.get("vendor_id")))
+    product = _parse_int_flexible(data.get("sdp_product_id", data.get("product_id")))
+    if (vendor == CLASSIC_BT_SDP_DEVICE_ID["vendor_id"]
+            and product == CLASSIC_BT_SDP_DEVICE_ID["product_id"]):
+        tags.append("classic_bt_sdp_did:qualcomm_001d_1200")
 
     company = _parse_int_flexible(
         data.get("company_id") or data.get("mfg_company_id")
