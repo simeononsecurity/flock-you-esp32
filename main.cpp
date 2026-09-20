@@ -333,11 +333,14 @@ static const size_t  fullHopChannelCount = sizeof(fullHopChannels) / sizeof(full
 // "flock"          → bare deployed cameras, provisioning "Flock-XXXXXX"
 // "flock camera"   → issue-43 hotspot ("Flock Camera net.")
 // "flocksafety"    → variant brand string sometimes advertised
+// "fs ext battery" → "FS Ext Battery" battery-pack SoftAP (firmware dump,
+//                    2026-09-16 — the same label the pack advertises over BLE)
 static const char* target_ssid_keywords[] = {
   "flock",          // matches "Flock", "Flock-XXXXXX", "FLOCK-XXXXXX", "Flock Camera net."
   "flocksafety",
   "penguin",        // internal Flock product codename
-  "pigvision"       // PigVision / Raven variant
+  "pigvision",      // PigVision / Raven variant
+  "fs ext battery"  // FS Ext Battery pack SoftAP (firmware-derived, 2026-09-16)
 };
 static const size_t SSID_KEYWORD_COUNT = sizeof(target_ssid_keywords) / sizeof(target_ssid_keywords[0]);
 
@@ -429,6 +432,7 @@ typedef struct {
   volatile uint32_t framesPerChannel[16];  // [0] unused; >14 (C5 5 GHz) not indexed
   // ---- gate (incremented right before each enqueueAlert()) ----
   volatile uint32_t candAddr2;             // OUI hit on addr2 (any tier)
+  volatile uint32_t candFwMac;             // exact firmware-default MAC in addr2
   volatile uint32_t candWildcard;          // wildcard probe request
   volatile uint32_t candAddr1;             // OUI hit on addr1
   volatile uint32_t candAddr3;             // OUI hit on addr3
@@ -440,6 +444,7 @@ typedef struct {
   volatile uint32_t bleCandMfrId;
   volatile uint32_t bleCandUuid;
   volatile uint32_t bleCandName;
+  volatile uint32_t bleCandGatt;           // Flock accessory / Nordic DFU service
 #endif
   // ---- alert queue (closes the "matched but vanished" gap) ----
   volatile uint32_t enqueueOk;
@@ -498,7 +503,35 @@ typedef enum : uint8_t {
   ALERT_BLE_MFR_ID      = 8,   // BLE mfr-ID 0x09C8 (XUNTONG / Flock)
   ALERT_BLE_RAVEN_UUID  = 9,   // Raven/Flock 128-bit BLE service UUID
   ALERT_BLE_NAME        = 10,  // BLE device-name substring match
+  // Firmware-derived signatures (Flock ALPR camera firmware dump, 2026-09-16;
+  // upstream colonelpanichacks/flock-you). APPENDED, never reordered: these
+  // numeric values travel the serial protocol to api/flockyou.py, so existing
+  // values must stay stable.
+  ALERT_BLE_FLOCK_GATT  = 11,  // Flock accessory / Nordic DFU GATT service
+  ALERT_FW_DEFAULT_MAC  = 12,  // exact firmware-default QCA9377 MAC in addr2
 } AlertType;
+
+// Is this alert type a BLE one? Used by maybeLockChannel() (BLE alerts have no
+// WiFi channel to lock onto), and by the DETECT-*/JSON/UI/device_name branches
+// in drainAlertQueue().
+//
+// WHY THIS IS A FUNCTION rather than an inline `||`-chain: the check used to be
+// spelled out literally (`e.type == ALERT_BLE_MFR_ID || e.type ==
+// ALERT_BLE_RAVEN_UUID || e.type == ALERT_BLE_NAME`) in three separate places.
+// Adding a BLE alert type therefore silently missed whichever copies the author
+// didn't find — the new type would still alert, but would be treated as WiFi
+// for channel-locking, logging, and JSON. One predicate removes that whole
+// class of bug, so keep it as the only source of truth for this question.
+static inline bool alertTypeIsBle(AlertType t) {
+  return t == ALERT_BLE_MFR_ID || t == ALERT_BLE_RAVEN_UUID ||
+         t == ALERT_BLE_NAME   || t == ALERT_BLE_FLOCK_GATT;
+}
+
+// Forward declaration. The definition lives much further down (in the
+// "DETECTIONS TABLE" section), but fyProcessBLEAdvertisedDevice() — compiled
+// before it — wants to print the human-readable method name in its immediate
+// BLE log line. Same declare-then-define pattern already used for dualPrintf().
+static const char* alertTypeToMethod(AlertType t);
 
 typedef struct {
   AlertType type;
@@ -583,7 +616,7 @@ static void IRAM_ATTR enqueueAlert(AlertType type, const uint8_t* mac, int8_t rs
 
 // Standalone BLE-only confidence tiers (fix: these previously never fired —
 // a BLE-only match only recorded a timestamp for later WiFi correlation and
-// NEVER produced a real alert on its own). All three are set above
+// NEVER produced a real alert on its own). All of them are set above
 // CHIRP_MIN_CONFIDENCE=30 so a lone BLE match now chirps/flashes/logs just
 // like a WiFi OUI hit does, mirroring that existing tiered-confidence design.
 // Kept in sync with fy_confidence.h; duplicated here because
@@ -592,6 +625,7 @@ static void IRAM_ATTR enqueueAlert(AlertType type, const uint8_t* mac, int8_t rs
 #define CS_BLE_MFR_ID_STANDALONE 45
 #define CS_BLE_UUID_STANDALONE   45
 #define CS_BLE_NAME_STANDALONE   35
+#define CS_BLE_GATT_STANDALONE   45
 
 #if defined(BLE_SELF_TEST) && BLE_SELF_TEST
 static NimBLEAdvertising* g_pBLEAdv = nullptr;
@@ -599,27 +633,19 @@ static NimBLEAdvertising* g_pBLEAdv = nullptr;
 
 // Raven UUIDs are checked via fyCheckRavenUUIDFromStrings() from fy_detect.h
 // using full 128-bit UUID strings.  The old short-form defines are gone.
-
-static const char* ble_flock_names[] = {
-  "flock", "penguin", "pigvision", "fs ext battery",
-  "raven",  // Raven variant
-  nullptr
-};
+//
+// The BLE device-name list and the substring helper that used to live here
+// (a lowercase `ble_flock_names[]` + `bleNameContains()`) have been DELETED in
+// favour of fy_detect.h's fyCheckFlockBleName(): keeping two copies of the same
+// name list meant adding a name to one silently left the other behind, and the
+// name checks now also need the pattern forms (bare 10-digit serial, DfuTarg)
+// that only fy_detect.h implements. The cross-device name matching happens
+// inline in fyProcessBLEAdvertisedDevice() below.
 
 static volatile uint32_t g_bleFlockLastSeen = 0;  // millis() of last BLE Flock hit
 static volatile int8_t   g_bleFlockRssi     = -127;
 static unsigned long     g_bleNextScan      = 0;
 static NimBLEScan*       g_pBLEScan         = nullptr;
-
-// Case-insensitive substring search (BLE name is typically short)
-static bool bleNameContains(const char* name, const char* needle) {
-  if (!name || !needle || !*name || !*needle) return false;
-  // lowercase copy of name
-  char low[64]; size_t i = 0;
-  while (i < 63 && name[i]) { low[i] = (char)tolower((unsigned char)name[i]); i++; }
-  low[i] = '\0';
-  return strstr(low, needle) != nullptr;
-}
 
 // Shared onResult() logic — identical for NimBLE-Arduino 1.x and 2.x.  The
 // getters used here (getRSSI/getManufacturerData/haveServiceUUID/
@@ -659,9 +685,18 @@ static void fyProcessBLEAdvertisedDevice(NimBLEAdvertisedDevice* adv) {
     }
   }
 
-  // 2. Raven / Flock BLE service UUID check — full 128-bit UUIDs (GainSec/PR#39).
-  // Iterates the device's advertised service list and delegates to fy_detect.h's
-  // hardware-independent fyCheckRavenUUIDFromStrings() for the actual comparison.
+  // 2. Advertised GATT service check.
+  //
+  // Two independent service signature sets are checked against the same
+  // advertised-UUID list, in priority order:
+  //   (a) the Flock accessory / Nordic DFU services (firmware-derived set,
+  //       2026-09-16) — these come from Flock's own GATT definitions, so they
+  //       get a dedicated alert type rather than being mislabelled "raven";
+  //   (b) the Raven service set, which now ALSO matches by *range*
+  //       (0x3100-0x3500) instead of only the named round-number UUIDs. That
+  //       range match is what finally catches 0x3101/0x3102 — the
+  //       unauthenticated Raven services that leak GPS coordinates, which the
+  //       old exact-string-only comparison silently missed.
   if (!matched && adv->haveServiceUUID()) {
     int nsvc = adv->getServiceUUIDCount();
     const char* strs[16];
@@ -672,27 +707,32 @@ static void fyProcessBLEAdvertisedDevice(NimBLEAdvertisedDevice* adv) {
       strs[si] = bufs[si].c_str();
     }
     char matchedUUID[41] = {0};
-    if (fyCheckRavenUUIDFromStrings(strs, n, matchedUUID)) {
+    if (fyCheckFlockGattUUIDFromStrings(strs, n, matchedUUID)) {
+      matched       = true;
+      bleAlertType  = ALERT_BLE_FLOCK_GATT;
+      bleConfidence = CS_BLE_GATT_STANDALONE;
+    } else if (fyCheckRavenUUIDFromStrings(strs, n, matchedUUID)) {
       matched       = true;
       bleAlertType  = ALERT_BLE_RAVEN_UUID;
       bleConfidence = CS_BLE_UUID_STANDALONE;
-      // Log which UUID matched (matchedUUID is populated by the helper)
-      (void)matchedUUID;
     }
   }
 
-  // 3. Device name match
-  if (!matched) {
-    std::string name = adv->getName();
-    if (!name.empty()) {
-      for (const char** kw = ble_flock_names; *kw; kw++) {
-        if (bleNameContains(name.c_str(), *kw)) {
-          matched       = true;
-          bleAlertType  = ALERT_BLE_NAME;
-          bleConfidence = CS_BLE_NAME_STANDALONE;
-          break;
-        }
-      }
+  // 3. Device-name match. fyCheckFlockBleName() covers both the substring
+  //    keyword list and the exact/pattern forms the firmware-derived set adds
+  //    (bare 10-digit serial, "Penguin-NNNNNNNNNN", "FS Ext Battery",
+  //    "DfuTarg") — see fy_detect.h.
+  //
+  //    The name is captured unconditionally rather than only when it matches:
+  //    it is also reported as device_name on the alert (JSON + log line), which
+  //    is what makes a stored BLE detection identifiable later ("Penguin-…"
+  //    vs an anonymous MAC).
+  std::string devName = adv->getName();
+  if (!matched && !devName.empty()) {
+    if (fyCheckFlockBleName(devName.c_str())) {
+      matched       = true;
+      bleAlertType  = ALERT_BLE_NAME;
+      bleConfidence = CS_BLE_NAME_STANDALONE;
     }
   }
 
@@ -706,6 +746,7 @@ static void fyProcessBLEAdvertisedDevice(NimBLEAdvertisedDevice* adv) {
       case ALERT_BLE_MFR_ID:     FY_STAT_BUMP(fyStats.bleCandMfrId); break;
       case ALERT_BLE_RAVEN_UUID: FY_STAT_BUMP(fyStats.bleCandUuid);  break;
       case ALERT_BLE_NAME:       FY_STAT_BUMP(fyStats.bleCandName);  break;
+      case ALERT_BLE_FLOCK_GATT: FY_STAT_BUMP(fyStats.bleCandGatt);  break;
       default: break;
     }
 #endif
@@ -735,15 +776,27 @@ static void fyProcessBLEAdvertisedDevice(NimBLEAdvertisedDevice* adv) {
            &mac[0], &mac[1], &mac[2], &mac[3], &mac[4], &mac[5]);
 
     // channel=0 (meaningless for BLE — emitDetectionJSON()/drainAlertQueue()
-    // both special-case protocol=="ble" methods and omit/ignore it); ssid=
-    // nullptr (BLE has no SSID concept); kind=nullptr (method name alone,
-    // derived from bleAlertType via alertTypeToMethod(), is enough context).
-    enqueueAlert(bleAlertType, mac, rssi, 0, nullptr, nullptr, (uint8_t)conf);
+    // both special-case BLE alerts and omit/ignore it); kind=nullptr (method
+    // name alone, derived from bleAlertType via alertTypeToMethod(), is enough
+    // context).
+    //
+    // The advertised device name IS carried through, in the AlertEntry.ssid
+    // slot (likewise "no SSID concept" for BLE — the field is just a 32-char
+    // text slot). It is what drainAlertQueue() emits as device_name in the
+    // JSON and in the DETECT-BLE log line, and what fyAddDetection() stores for
+    // the SPIFFS session. Truncation to 31 chars is fine for every known form
+    // ("Penguin-1234567890" is 18). nullptr when the advert had no name, so the
+    // JSON reports an empty device_name rather than a stale one.
+    enqueueAlert(bleAlertType, mac, rssi, 0,
+                 devName.empty() ? nullptr : devName.c_str(),
+                 nullptr, (uint8_t)conf);
 
     // Log immediately from BLE task — Serial is safe here because we're not
     // in the WiFi promiscuous callback (different task context).
-    Serial.printf("[flockyou] BLE-Flock rssi=%d addr=%s\n",
-                  (int)rssi, adv->getAddress().toString().c_str());
+    Serial.printf("[flockyou] BLE-Flock method=%s rssi=%d addr=%s name=\"%s\"\n",
+                  alertTypeToMethod(bleAlertType), (int)rssi,
+                  adv->getAddress().toString().c_str(),
+                  devName.empty() ? "" : devName.c_str());
   }
 }
 
@@ -1294,9 +1347,10 @@ static void printSniffStats() {
 
   // GATE + QUEUE line — how far frames got through matching, and whether any
   // matched alert was lost between matching and logging.
-  dualPrintf("[flockyou] stats gate a2=%lu wild=%lu a1=%lu a3=%lu ssid=%lu"
-             " laa=%lu seqpair=%lu | queue ok=%lu drop=%lu drained=%lu\n",
+  dualPrintf("[flockyou] stats gate a2=%lu fwmac=%lu wild=%lu a1=%lu a3=%lu"
+             " ssid=%lu laa=%lu seqpair=%lu | queue ok=%lu drop=%lu drained=%lu\n",
              (unsigned long)fyStats.candAddr2,
+             (unsigned long)fyStats.candFwMac,
              (unsigned long)fyStats.candWildcard,
              (unsigned long)fyStats.candAddr1,
              (unsigned long)fyStats.candAddr3,
@@ -1308,11 +1362,12 @@ static void printSniffStats() {
              (unsigned long)fyStats.drained);
 
 #if defined(ENABLE_BLE_SCAN) && ENABLE_BLE_SCAN
-  dualPrintf("[flockyou] stats ble adv=%lu mfr=%lu uuid=%lu name=%lu\n",
+  dualPrintf("[flockyou] stats ble adv=%lu mfr=%lu uuid=%lu name=%lu gatt=%lu\n",
              (unsigned long)fyStats.bleAdvTotal,
              (unsigned long)fyStats.bleCandMfrId,
              (unsigned long)fyStats.bleCandUuid,
-             (unsigned long)fyStats.bleCandName);
+             (unsigned long)fyStats.bleCandName,
+             (unsigned long)fyStats.bleCandGatt);
 #endif
 }
 #endif  // FY_SNIFF_STATS
@@ -1361,8 +1416,7 @@ static void screenTick() {
 // fy_confidence.h) because it references CHIRP_MIN_CONFIDENCE, which is
 // only visible to the preprocessor from this point in the file onward.
 static void maybeLockChannel(const AlertEntry& e) {
-  bool isBleAlert = (e.type == ALERT_BLE_MFR_ID || e.type == ALERT_BLE_RAVEN_UUID ||
-                     e.type == ALERT_BLE_NAME);
+  bool isBleAlert = alertTypeIsBle(e.type);
   if (isBleAlert) return;                          // no WiFi channel to lock to
   if (e.confidence < CHIRP_MIN_CONFIDENCE) return;  // only confident hits lock
 
@@ -1397,6 +1451,8 @@ static const char* alertTypeToMethod(AlertType t) {
     case ALERT_BLE_MFR_ID:     return "ble_mfr_id";      // standalone BLE mfr-ID
     case ALERT_BLE_RAVEN_UUID: return "ble_raven_uuid";  // standalone Raven UUID
     case ALERT_BLE_NAME:       return "ble_name";        // standalone BLE name
+    case ALERT_BLE_FLOCK_GATT: return "ble_flock_gatt";  // Flock accessory/DFU svc
+    case ALERT_FW_DEFAULT_MAC: return "fw_default_mac";  // exact fw-default MAC
     default:                   return "unknown";
   }
 }
@@ -1658,9 +1714,15 @@ static void fyPromotePrevSession() {
 
 static void emitDetectionJSON(const char* mac, const char* method,
                                int8_t rssi, uint8_t ch, const char* ssid,
-                               uint8_t confidence) {
+                               const char* devName, uint8_t confidence) {
   char ssidEsc[sizeof(((FYDetection*)0)->ssid) * 6 + 1];
   jsonEscape(ssidEsc, sizeof(ssidEsc), ssid ? ssid : "");
+  // device_name: the advertised BLE name (e.g. "Penguin-1234567890",
+  // "FS Ext Battery") for BLE alerts, always empty for WiFi ones. The field was
+  // already part of the wire format but hardcoded to "" — populating it is what
+  // lets the dashboard show *what* a BLE hit was rather than just its MAC.
+  char nameEsc[sizeof(((FYDetection*)0)->ssid) * 6 + 1];
+  jsonEscape(nameEsc, sizeof(nameEsc), devName ? devName : "");
   char oui[9];
   uint8_t mbytes[6] = {0};
   sscanf(mac, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
@@ -1682,7 +1744,7 @@ static void emitDetectionJSON(const char* mac, const char* method,
       "\"protocol\":\"%s\","
       "\"mac_address\":\"%s\","
       "\"oui\":\"%s\","
-      "\"device_name\":\"\","
+      "\"device_name\":\"%s\","
       "\"rssi\":%d,"
       "\"channel\":%u,"
       "\"frequency\":%u,"
@@ -1690,7 +1752,7 @@ static void emitDetectionJSON(const char* mac, const char* method,
       "\"confidence\":%u}\n",
       isBle ? "" : "wifi_", method,
       isBle ? "ble" : channelBand(ch),
-      mac, isBle ? "n/a" : ouiStr, rssi,
+      mac, isBle ? "n/a" : ouiStr, nameEsc, rssi,
       (unsigned)ch, (unsigned)channelFreqMhz(ch),
       ssidEsc, (unsigned)confidence);
 }
@@ -1797,9 +1859,33 @@ static void IRAM_ATTR wifiSniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
   // High confidence (exclusive Flock):  ALERT_OUI_ADDR2,    score≥40, chirps.
   // Contract-mfr (shared Liteon/USI):   ALERT_OUI_MFR,      score=20, silent.
   // SoundThinking/ShotSpotter:          ALERT_SOUNDTHINKING, score=35, chirps.
+  //
+  // Firmware-derived addition (Flock camera firmware dump, 2026-09-16): an
+  // EXACT match on a factory-default QCA9377 radio MAC is checked first, as its
+  // own high-confidence alert. It has to be checked here rather than left to the
+  // OUI tiers because 00:03:7f lives in the contract-manufacturer table (it is a
+  // ubiquitous Qualcomm Atheros chipset prefix), so those frames would otherwise
+  // only ever score CS_OUI_MFR=20 and be logged silently — even though the full
+  // address 00:03:7f:50:00:01 / 00:03:7f:4f:00:16 is one of the most specific
+  // signatures we have. See FY_EXACT_MAC_* in fy_detect.h.
   {
+    bool isFwDefault = matchExactFwMac(hdr->addr2);
+    if (isFwDefault) {
+      uint8_t conf = computeConfidence(ALERT_FW_DEFAULT_MAC, hdr->addr2, rssi, nullptr);
+#if FY_SNIFF_STATS
+      FY_STAT_BUMP(fyStats.candFwMac);
+#endif
+      enqueueAlert(ALERT_FW_DEFAULT_MAC, hdr->addr2, rssi, ch,
+                   nullptr, "addr2", conf);
+    }
+
     bool isHigh = matchFlockHighOui(hdr->addr2);
-    bool isMfr  = !isHigh && matchFlockMfrOui(hdr->addr2);
+    // Suppress the mfr-tier downgrade when the exact default-MAC alert already
+    // fired for this frame: emitting ALERT_OUI_MFR too would push a second,
+    // weaker alert for the *same* MAC through drainAlertQueue()'s per-MAC
+    // dedupe, and the later (weaker) method string would overwrite the stronger
+    // one on the stored detection record.
+    bool isMfr  = !isHigh && !isFwDefault && matchFlockMfrOui(hdr->addr2);
     bool isST   = !isHigh && !isMfr && matchSoundThinkingOui(hdr->addr2);
 
     if (isHigh || isMfr || isST) {
@@ -1988,6 +2074,13 @@ static void drainAlertQueue() {
     const char* method = alertTypeToMethod(e.type);
 
     bool chirpWorthy = false;
+    // NOTE on the text field passed to fyAddDetection: BLE alerts deliberately
+    // do NOT store their advertised device name in the detection table's ssid
+    // slot. That slot is persisted to the SPIFFS session and exported to CSV as
+    // "ssid", so writing "Penguin-1234567890" there would make a BLE device name
+    // read as an SSID match for anyone reading the export. The name still reaches
+    // the dashboard on the live JSON path via device_name (below) and appears in
+    // the DETECT-BLE log line; only the offline/replay record omits it.
     int idx = fyAddDetection(macStr, method, e.rssi, e.channel,
                              (e.type == ALERT_SSID || e.type == ALERT_LAA_SSID)
                                ? e.ssid : nullptr,
@@ -2001,8 +2094,7 @@ static void drainAlertQueue() {
     ouiFromMac(e.mac, oui, sizeof(oui));
 
     // Human-readable line
-    bool isBleAlert = (e.type == ALERT_BLE_MFR_ID || e.type == ALERT_BLE_RAVEN_UUID ||
-                       e.type == ALERT_BLE_NAME);
+    bool isBleAlert = alertTypeIsBle(e.type);
     if (e.type == ALERT_SSID || e.type == ALERT_LAA_SSID) {
       const char* tag = (e.type == ALERT_LAA_SSID) ? "DETECT-LAA-SSID" : "DETECT-SSID";
       dualPrintf("[flockyou] %s type=%s mac=%s ssid=\"%s\" rssi=%d ch=%u conf=%u count=%d\n",
@@ -2012,22 +2104,30 @@ static void drainAlertQueue() {
     } else if (isBleAlert) {
       // Dedicated BLE log line -- omits the meaningless WiFi channel field
       // (BLE has no 802.11 channel concept) and labels the method plainly.
-      dualPrintf("[flockyou] DETECT-BLE method=%s addr=%s rssi=%d conf=%u count=%d\n",
-                 method, macStr, e.rssi,
+      // The advertised device name is printed when the advert carried one
+      // (e.ssid holds it for BLE alerts — see fyProcessBLEAdvertisedDevice).
+      dualPrintf("[flockyou] DETECT-BLE method=%s addr=%s name=\"%s\" rssi=%d conf=%u count=%d\n",
+                 method, macStr, e.ssid, e.rssi,
                  (unsigned)e.confidence,
                  (idx >= 0) ? (int)fyDet[idx].count : 0);
     } else {
-      dualPrintf("[flockyou] DETECT-OUI mac=%s oui=%s rssi=%d ch=%u addr=%s conf=%u count=%d\n",
-                 macStr, oui, e.rssi, e.channel,
+      // method= is included so the OUI-family alert types are distinguishable in
+      // the log alone (oui_addr2 / oui_mfr / soundthinking / fw_default_mac) —
+      // previously only `conf` and the JSON carried that, which made verifying a
+      // specific path from a serial capture awkward.
+      dualPrintf("[flockyou] DETECT-OUI method=%s mac=%s oui=%s rssi=%d ch=%u addr=%s conf=%u count=%d\n",
+                 method, macStr, oui, e.rssi, e.channel,
                  e.frameKind[0] ? e.frameKind : "addr2",
                  (unsigned)e.confidence,
                  (idx >= 0) ? (int)fyDet[idx].count : 0);
     }
 
-    // Flask JSON
+    // Flask JSON — device_name is populated for BLE alerts (from the same
+    // ssid slot) and left empty for WiFi ones, which have no name concept.
     emitDetectionJSON(macStr, method, e.rssi, e.channel,
                       (e.type == ALERT_SSID || e.type == ALERT_LAA_SSID)
                         ? e.ssid : "",
+                      isBleAlert ? e.ssid : "",
                       e.confidence);
 
     // PR#39: only chirp and LED flash for detections at or above CHIRP_MIN_CONFIDENCE.

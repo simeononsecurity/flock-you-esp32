@@ -104,7 +104,8 @@ static void bleSelfTestRestoreAddr() {
   NimBLEDevice::setOwnAddrType(BLE_OWN_ADDR_PUBLIC);
 }
 
-// Broadcasts scenario N (0=mfr-ID, 1=Raven UUID, 2=name) for
+// Broadcasts scenario N (0=mfr-ID, 1=Raven UUID, 2=Flock-GATT, 3=bare-serial
+// name, 4=keyword name) for
 // BLE_SELFTEST_ADV_MS, then stops advertising.
 //
 // SCAN PAUSE/RESUME (root-caused via the ble_hs_id_set_rnd() diagnostic
@@ -139,6 +140,19 @@ static void bleSelfTestFire(NimBLEAdvertising* adv, uint8_t scenario) {
     case 1:
       data.setCompleteServices(NimBLEUUID(fy_raven_uuids[0]));
       label = "Raven-UUID";
+      break;
+    case 2:
+      // Flock accessory GATT service (firmware-derived set, 2026-09-16). The
+      // Nordic DFU UUID shares this same alert type/code path, so one burst
+      // covers the gate for both.
+      data.setCompleteServices(NimBLEUUID(FY_FLOCK_ACCESSORY_UUID));
+      label = "Flock-GATT";
+      break;
+    case 3:
+      // Bare 10-digit serial — exercises fyCheckBleNamePattern()'s *shape*
+      // match, which the substring keyword list cannot express.
+      data.setName("1234567890");
+      label = "bare-serial";
       break;
     default:
       data.setName("Flock-SelfTest");
@@ -185,7 +199,7 @@ static void bleSelfTestInit() {
 static void bleSelfTestTick(NimBLEAdvertising* adv) {
   if (millis() < bleSelfTestNextAt) return;
   bleSelfTestFire(adv, bleSelfTestScenario);
-  bleSelfTestScenario = (bleSelfTestScenario + 1) % 3;
+  bleSelfTestScenario = (bleSelfTestScenario + 1) % 5;
   bleSelfTestNextAt = millis() + BLE_SELFTEST_INTERVAL_MS;
 }
 

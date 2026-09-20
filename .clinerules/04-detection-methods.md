@@ -15,10 +15,11 @@ LED flash / chirp (if `confidence >= CHIRP_MIN_CONFIDENCE`, currently 30)
 | AlertType             | Trigger                                                                 | Method string      | Notes |
 |-----------------------|--------------------------------------------------------------------------|--------------------|-------|
 | `ALERT_OUI_ADDR2`     | 802.11 `addr2` (transmitter) matches a high-confidence Flock OUI          | `oui_addr2`        | Primary/strongest WiFi signal |
+| `ALERT_FW_DEFAULT_MAC`| `addr2` equals, byte-for-byte, one of `fy_exact_macs[]` — the **factory-default** QCA9377 radio MACs from the camera firmware image (`00:03:7f:50:00:01`, `00:03:7f:4f:00:16`) | `fw_default_mac` | Firmware-derived (2026-09-16). `CS_FW_DEFAULT_MAC=55`. Checked *before* the OUI tiers because those MACs live inside the ubiquitous `00:03:7f` Qualcomm Atheros prefix (mfr-tier, 20, silent) — the full address is the specific part, so the mfr-tier emission is suppressed for the same frame. Only ever fires on an **unprovisioned** unit (provisioning rewrites the MAC). |
 | `ALERT_OUI_ADDR1`     | `addr1` (receiver/dest) matches a high-confidence OUI, not multicast      | `oui_addr1`        | Catches cameras appearing as probe-response destinations |
 | `ALERT_OUI_ADDR3`     | `addr3` (BSSID) matches, mgmt frames only, not multicast                 | `oui_addr3`        | Fallback for randomized `addr2` |
 | `ALERT_WILDCARD_PROBE`| Probe Request with high/mfr-tier OUI **and** a zero-length (wildcard) SSID IE | `wildcard_probe` | Flock cameras scan with empty-SSID probes |
-| `ALERT_SSID`          | Beacon/Probe-Resp/Probe-Req SSID contains a keyword (`flock`, `flocksafety`, `penguin`, `pigvision`), globally-administered MAC | `ssid` | |
+| `ALERT_SSID`          | Beacon/Probe-Resp/Probe-Req SSID contains a keyword (`flock`, `flocksafety`, `penguin`, `pigvision`, `fs ext battery`), globally-administered MAC | `ssid` | `fs ext battery` added from the firmware-derived set (FS Ext Battery pack SoftAP) |
 | `ALERT_LAA_SSID`      | Same SSID match, but transmitter MAC is **locally-administered** (bit 1 of first octet set) | `laa_ssid` | Issue-#43 "Flock Camera net." camera class — LAA MACs never match any OUI table, so SSID is the only handle. Gets a sequential-MAC pair bonus if a `:DE`/`:DF` adjacent-channel pair is seen (`checkSeqMac()`). |
 | `ALERT_OUI_MFR`       | `addr2` matches a contract-manufacturer OUI (Liteon/USI) shared with non-Flock devices | `oui_mfr` | Lower confidence (`CS_OUI_MFR=20` < `CHIRP_MIN_CONFIDENCE=30`) — logged silently, no chirp/LED alone |
 | `ALERT_SOUNDTHINKING` | `addr2` matches the SoundThinking/ShotSpotter acoustic-sensor OUI          | `soundthinking`    | Often co-deployed with Flock cameras; `CS_SOUNDTHINKING=35` does chirp |
@@ -34,8 +35,28 @@ when `ENABLE_BLE_SCAN=1`)
 | AlertType             | Trigger                                                          | Method string     | Confidence |
 |-----------------------|--------------------------------------------------------------------|-------------------|------------|
 | `ALERT_BLE_MFR_ID`    | Manufacturer-specific data with company ID `0x09C8` (XUNTONG/Flock) | `ble_mfr_id`      | `CS_BLE_MFR_ID_STANDALONE=45` (+5 if RSSI > -70) |
-| `ALERT_BLE_RAVEN_UUID`| Advertised service UUID matches one of `fy_raven_uuids[]` (128-bit Raven/Flock UUIDs) | `ble_raven_uuid` | `CS_BLE_UUID_STANDALONE=45` |
-| `ALERT_BLE_NAME`      | Device name substring-matches `ble_flock_names[]` (`flock`, `penguin`, `pigvision`, `fs ext battery`, `raven`) | `ble_name` | `CS_BLE_NAME_STANDALONE=35` |
+| `ALERT_BLE_RAVEN_UUID`| Advertised service UUID matches `fy_raven_uuids[]` **or falls anywhere in the Raven 16-bit range `0x3100`–`0x3500`** | `ble_raven_uuid` | `CS_BLE_UUID_STANDALONE=45` |
+| `ALERT_BLE_FLOCK_GATT`| Advertised service UUID matches `fy_ble_gatt_uuids[]` — the Flock accessory service `e8ccbb38-9532-46a8-9fe5-1814df172e6f` or the Nordic legacy DFU service `00001530-1212-efde-1523-785feabcd123` | `ble_flock_gatt` | `CS_BLE_GATT_STANDALONE=45` |
+| `ALERT_BLE_NAME`      | Device name matches `fyCheckFlockBleName()`: a substring keyword from `fy_ble_names[]` (`FS Ext Battery`, `Penguin`, `Flock`, `Pigvision`, `Raven`, `DfuTarg`) **or** a shape from `fyCheckBleNamePattern()` (`Penguin-` + 10 digits, a bare 10-digit serial, `FS Ext Battery`, `DfuTarg`) | `ble_name` | `CS_BLE_NAME_STANDALONE=35` |
+
+Notes on the firmware-derived BLE additions (2026-09-16 dump):
+
+- The Raven `0x3100`–`0x3500` **range** match exists because the named list only
+  holds the round hundred values — the services that actually leak GPS
+  (`0x3101`/`0x3102`) are *not* in it, so exact-string matching alone silently
+  missed the highest-value services. `fyService16FromUuidString()` parses both
+  the canonical 128-bit form NimBLE emits and the short `0x3101`/`3101` forms.
+  (Intended side effect: a few **existing tests changed behaviour**, e.g. the
+  old "short-form UUIDs never match" test still passes because `1b7e`/`fd60` sit
+  outside the range.)
+- The Flock accessory service deliberately does **not** share the Raven alert
+  type: labelling Flock's own GATT service `ble_raven_uuid` would mislabel it on
+  the dashboard and in CSV export.
+- `ALERT_BLE_NAME`'s advertised name is carried through `AlertEntry.ssid` and
+  emitted as `device_name` in the JSON (and in the `DETECT-BLE` log line). It is
+  *not* written into the detection table's `ssid` field, because that field is
+  persisted/exported as an SSID and a device name there would read as an SSID
+  match.
 
 These are **standalone** alerts — a BLE-only match produces a real alert
 immediately (no corroborating WiFi frame required). This was a
@@ -64,10 +85,14 @@ without generating alert fatigue.
   single board self-advertises the 3 BLE scenarios and picks them back up
   via its own always-on coex scan.
 - `beacon_test.cpp` (`m5atom-lite-beacon` env, separate standalone
-  firmware): broadcasts all 12 scenarios (9 WiFi + 3 BLE, 1:1 with the
-  table above) on a rotating schedule, for testing against a SECOND board
+  firmware): broadcasts all 15 scenarios (10 WiFi + 5 BLE, 1:1 with the
+  tables above) on a rotating schedule, for testing against a SECOND board
   running the real detector — the preferred test method since it doesn't
-  depend on same-radio self-reception quirks. Each WiFi scenario is sent
+  depend on same-radio self-reception quirks. Scenarios 12–14 cover the
+  firmware-derived additions specifically (exact default-MAC, Flock
+  accessory GATT service, and a bare-serial BLE name that only the shape
+  matcher can catch), and each derives its payload from `fy_detect.h`'s
+  tables rather than re-hardcoding it. Each WiFi scenario is sent
   via `txSweep()`, which repeats the {1,6,11} channel sweep
   `SWEEP_PASSES` times (currently 6, ~576 ms total burst) so a single
   scenario firing is long enough to overlap a real detector's channel-hop

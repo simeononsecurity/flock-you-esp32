@@ -145,12 +145,13 @@ pio run -e esp32dev-ble -t upload && pio device monitor
 
 This firmware uses **five research-proven techniques** with a confidence score (0–100):
 
-### 1. WiFi Promiscuous Sniffing (@NitekryDPaul)
+### 1. WiFi Promiscuous Sniffing (@NitekryDPaul + firmware-derived)
 - Monitors 2.4 GHz management & data frames
-- **Three OUI confidence tiers** (PR#39):
+- **Four OUI confidence tiers** (PR#39 + firmware-derived set):
   - **HIGH** (32 OUIs) — exclusively Flock Safety registered → score 40, always alerts
-  - **MFR** (6 OUIs) — Liteon/USI contract manufacturer → score 20, silent log only
+  - **MFR** (7 OUIs) — Liteon/USI contract manufacturer **+ `00:03:7f` Qualcomm Atheros (the camera's QCA9377 radio)** → score 20, silent log only
   - **SoundThinking** (1 OUI) — acoustic sensor co-deployed with Flock → score 35, alerts
+  - **FW-default MAC** (2 full addresses) — `00:03:7f:50:00:01` / `00:03:7f:4f:00:16`, the **factory-default** QCA9377 radio MACs baked into the camera firmware image → score 55, alerts. Matched byte-for-byte, because the bare `00:03:7f` OUI is shared with every other Atheros device on earth; only an *unprovisioned* unit still transmits them.
 - **addr1 receiver-side detection** (catches sleeping cameras)
 - **addr3 BSSID fallback** for randomized addr2 frames (now ON by default)
 
@@ -160,14 +161,15 @@ This firmware uses **five research-proven techniques** with a confidence score (
 - Field-tested: 11/12 cameras detected, only 2 false positives
 
 ### 3. SSID Pattern Matching — including LAA-MAC cameras (issue #43)
-- Patterns: `"Flock Camera net."`, `"Flock-XXXXXX"`, `"FLOCK-XXXXXX"`, `"penguin"`, `"pigvision"`
+- Patterns: `"Flock Camera net."`, `"Flock-XXXXXX"`, `"FLOCK-XXXXXX"`, `"penguin"`, `"pigvision"`, `"fs ext battery"`
 - `"Flock Camera net."` cameras use **locally-administered MACs** (OUI matching won't work)
 - `ALERT_LAA_SSID` type detects these — SSID is the sole WiFi handle
 - Sequential-MAC heuristic: `:DE`/`:DF` last-byte pair on adjacent channels → +10 pts
 
-### 4. BLE Cross-Correlation (`ENABLE_BLE_SCAN=1`)
+### 4. BLE Detection + Cross-Correlation (`ENABLE_BLE_SCAN=1`)
 - Passive NimBLE scan for Flock BLE advertisements
-- Checks: mfr-ID `0x09C8` (XUNTONG/Flock), Raven 128-bit service UUIDs (GainSec), device names
+- Checks: mfr-ID `0x09C8` (XUNTONG/Flock), Raven service UUIDs (GainSec) **plus the whole Raven `0x3100`–`0x3500` service range**, device names, the **Flock accessory GATT service** (`e8ccbb38-…`) and the **Nordic legacy DFU service** — plus name *shapes* a keyword list can't express: `Penguin-NNNNNNNNNN`, a bare 10-digit serial, `DfuTarg`
+- Advertised device names are reported as `device_name` in the JSON/logs
 - **BLE_COEX_MODE=1** (default for all `-ble` environments): ESP-IDF SW coexistence scheduler
   runs WiFi promiscuous + BLE simultaneously — no promiscuous pause needed
 - BLE hit within 60 s of WiFi hit → +20 confidence bonus

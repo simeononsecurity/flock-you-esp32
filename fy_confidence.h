@@ -87,6 +87,19 @@
                                     //   confidence, GainSec-confirmed UUIDs
 #define CS_BLE_NAME_STANDALONE   35  // BLE device-name substring — good but
                                     //   slightly less specific than mfr-ID/UUID
+// Firmware-derived additions (Flock camera firmware dump, 2026-09-16; upstream
+// colonelpanichacks/flock-you).
+//
+// CS_FW_DEFAULT_MAC scores HIGHER than a normal OUI hit (40) because it is a
+// full 6-byte address rather than a 3-byte prefix: 00:03:7f:50:00:01 /
+// 00:03:7f:4f:00:16 are the *factory-default* QCA9377 radio addresses, i.e.
+// what the camera transmits before provisioning rewrites the MAC. The OUI alone
+// (00:03:7f) is only mfr-tier because it is a ubiquitous Atheros chipset
+// prefix — the exact address is not.
+#define CS_FW_DEFAULT_MAC        55  // exact firmware-default radio MAC (addr2)
+// Flock accessory / Nordic DFU GATT service — Flock-specific 128-bit UUIDs, so
+// the same confidence tier as the Raven service UUIDs above.
+#define CS_BLE_GATT_STANDALONE   45  // Flock accessory / Nordic DFU service
 
 // Minimum confidence for a detection to trigger the chirp/beep + LED flash.
 // Detections below this threshold are still logged and emitted in JSON.
@@ -110,6 +123,12 @@
 static uint8_t oui_high_bytes[FY_OUI_HIGH_COUNT][3];
 static uint8_t oui_mfr_bytes[FY_OUI_MFR_COUNT][3];
 static uint8_t oui_st_bytes[FY_OUI_ST_COUNT][3];
+
+// Firmware-default radio MACs (full 6 bytes) from fy_detect.h's fy_exact_macs[].
+// Kept as bytes for the same reason the OUI tables are: the promiscuous callback
+// must not call snprintf/strtol, so the ISR-side check is a 6-byte memcmp
+// against precompiled data (compare matchOuiRaw() below).
+static uint8_t exact_mac_bytes[FY_EXACT_MAC_COUNT][6];
 
 // Backward-compat count for heartbeat log (high + mfr combined)
 #define OUI_COUNT (FY_OUI_HIGH_COUNT + FY_OUI_MFR_COUNT)
@@ -136,10 +155,33 @@ static void precompileOuis() {
     oui_st_bytes[i][1] = (uint8_t)strtol(o + 3, nullptr, 16);
     oui_st_bytes[i][2] = (uint8_t)strtol(o + 6, nullptr, 16);
   }
+  // Populate the firmware-default radio MAC table. Each entry is a full
+  // "xx:xx:xx:xx:xx:xx" string, so the byte offset for component b is b*3
+  // (3 chars per "xx:" group, with the trailing colon skipped by strtol).
+  for (size_t i = 0; i < FY_EXACT_MAC_COUNT; i++) {
+    const char* m = fy_exact_macs[i];
+    for (int b = 0; b < 6; b++)
+      exact_mac_bytes[i][b] = (uint8_t)strtol(m + b * 3, nullptr, 16);
+  }
 }
 
 static inline bool IRAM_ATTR isMulticast(const uint8_t* mac) {
   return mac[0] & 0x01;
+}
+
+// Exact firmware-default radio MAC (all 6 bytes). See FY_EXACT_MAC_* in
+// fy_detect.h for why the *full* address is high-confidence while the bare
+// 00:03:7f OUI is only mfr-tier. IRAM-safe: 6-byte memcmp, no string work.
+static bool IRAM_ATTR matchExactFwMac(const uint8_t* mac) {
+  for (size_t i = 0; i < FY_EXACT_MAC_COUNT; i++) {
+    if (mac[0] == exact_mac_bytes[i][0] &&
+        mac[1] == exact_mac_bytes[i][1] &&
+        mac[2] == exact_mac_bytes[i][2] &&
+        mac[3] == exact_mac_bytes[i][3] &&
+        mac[4] == exact_mac_bytes[i][4] &&
+        mac[5] == exact_mac_bytes[i][5]) return true;
+  }
+  return false;
 }
 
 // High-confidence Flock Safety OUIs (direct registration / exclusively Flock).
@@ -349,6 +391,15 @@ static uint8_t IRAM_ATTR computeConfidence(AlertType type, const uint8_t* mac,
     case ALERT_BLE_NAME:
       // Standalone BLE device-name substring match.
       score += CS_BLE_NAME_STANDALONE;
+      break;
+    case ALERT_BLE_FLOCK_GATT:
+      // Standalone Flock accessory / Nordic DFU GATT service match.
+      score += CS_BLE_GATT_STANDALONE;
+      break;
+    case ALERT_FW_DEFAULT_MAC:
+      // Exact firmware-default QCA9377 radio address in addr2 — see
+      // CS_FW_DEFAULT_MAC for why this outranks a plain OUI hit.
+      score += CS_FW_DEFAULT_MAC;
       break;
     default:
       break;

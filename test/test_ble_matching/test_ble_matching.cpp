@@ -139,6 +139,133 @@ void test_ble_name_null_and_empty(void) {
     TEST_ASSERT_FALSE(fyCheckBLEName(""));
 }
 
+// ── Firmware-default radio MAC tests (firmware-derived set, 2026-09-16) ──────
+//
+// These two full addresses are the QCA9377 factory defaults from the Flock
+// camera firmware dump. They must match EXACTLY (full 6 bytes) — that
+// precision is the whole point, since the bare 00:03:7f OUI they sit in is
+// shared with a huge installed base of unrelated Atheros hardware.
+
+void test_fw_default_mac_known(void) {
+    TEST_ASSERT_TRUE(fyCheckFlockExactMAC("00:03:7f:50:00:01"));  // bdwlan30/fakeboar
+    TEST_ASSERT_TRUE(fyCheckFlockExactMAC("00:03:7f:4f:00:16"));  // otp30
+}
+
+void test_fw_default_mac_case_insensitive(void) {
+    TEST_ASSERT_TRUE(fyCheckFlockExactMAC("00:03:7F:50:00:01"));
+    TEST_ASSERT_TRUE(fyCheckFlockExactMAC("00:03:7F:4F:00:16"));
+}
+
+void test_fw_default_mac_requires_full_match(void) {
+    // Same OUI, different suffix — must NOT be treated as a firmware default.
+    TEST_ASSERT_FALSE(fyCheckFlockExactMAC("00:03:7f:50:00:02"));
+    TEST_ASSERT_FALSE(fyCheckFlockExactMAC("00:03:7f:4f:00:17"));
+    TEST_ASSERT_FALSE(fyCheckFlockExactMAC("00:03:7f:aa:bb:cc"));
+}
+
+void test_fw_default_mac_no_match(void) {
+    TEST_ASSERT_FALSE(fyCheckFlockExactMAC("aa:bb:cc:dd:ee:ff"));
+    TEST_ASSERT_FALSE(fyCheckFlockExactMAC("70:c9:4e:00:00:01"));
+    TEST_ASSERT_FALSE(fyCheckFlockExactMAC(nullptr));
+}
+
+void test_fw_default_mac_count(void) {
+    TEST_ASSERT_EQUAL(2u, (unsigned)FY_EXACT_MAC_COUNT);
+}
+
+// The Qualcomm Atheros OUI must be mfr-tier ONLY: it is a chipset vendor's
+// prefix, so a bare 00:03:7f match is weak evidence, unlike b4:1e:52.
+void test_qca_oui_is_mfr_tier_only(void) {
+    TEST_ASSERT_TRUE(fyCheckFlockMfrMAC("00:03:7f:aa:bb:cc"));
+    TEST_ASSERT_FALSE(fyCheckFlockHighMAC("00:03:7f:aa:bb:cc"));
+}
+
+// ── BLE name PATTERN tests (shape-matched, not substring) ────────────────────
+
+void test_ble_name_pattern_penguin_serial(void) {
+    TEST_ASSERT_TRUE(fyCheckBleNamePattern("Penguin-1234567890"));
+    TEST_ASSERT_TRUE(fyCheckBleNamePattern("PENGUIN-0000000000"));
+}
+
+void test_ble_name_pattern_bare_serial(void) {
+    // A bare 10-digit serial has no keyword to substring-match — this is the
+    // only form the pattern matcher can catch.
+    TEST_ASSERT_TRUE(fyCheckBleNamePattern("1234567890"));
+    TEST_ASSERT_FALSE(fyCheckBLEName("1234567890"));     // needs the pattern path
+    TEST_ASSERT_TRUE(fyCheckFlockBleName("1234567890")); // combined entry point catches it
+}
+
+void test_ble_name_pattern_dfutarg(void) {
+    TEST_ASSERT_TRUE(fyCheckBleNamePattern("DfuTarg"));
+    TEST_ASSERT_TRUE(fyCheckBleNamePattern("dfutarg"));
+    TEST_ASSERT_TRUE(fyCheckFlockBleName("DfuTarg"));
+}
+
+void test_ble_name_pattern_fs_ext_battery_exact(void) {
+    TEST_ASSERT_TRUE(fyCheckBleNamePattern("FS Ext Battery"));
+    TEST_ASSERT_TRUE(fyCheckBleNamePattern("fs ext battery"));
+}
+
+void test_ble_name_pattern_rejects_wrong_digit_counts(void) {
+    TEST_ASSERT_FALSE(fyCheckBleNamePattern("123456789"));     // 9 digits
+    TEST_ASSERT_FALSE(fyCheckBleNamePattern("12345678901"));   // 11 digits
+    TEST_ASSERT_FALSE(fyCheckBleNamePattern("1234567890X"));   // trailing junk
+    TEST_ASSERT_FALSE(fyCheckBleNamePattern("Penguin-123456789"));
+    TEST_ASSERT_FALSE(fyCheckBleNamePattern("Penguin-abcdefghij"));
+}
+
+void test_ble_name_pattern_no_match(void) {
+    TEST_ASSERT_FALSE(fyCheckBleNamePattern("Random BLE Device"));
+    TEST_ASSERT_FALSE(fyCheckBleNamePattern(""));
+    TEST_ASSERT_FALSE(fyCheckBleNamePattern(nullptr));
+}
+
+void test_ble_name_keyword_and_pattern_both_work(void) {
+    TEST_ASSERT_TRUE(fyCheckFlockBleName("Flock-Camera-01"));   // substring form
+    TEST_ASSERT_TRUE(fyCheckFlockBleName("FS Ext Battery"));
+    TEST_ASSERT_TRUE(fyCheckFlockBleName("9876543210"));       // pattern form
+    TEST_ASSERT_FALSE(fyCheckFlockBleName("JBL Flip 5"));
+    TEST_ASSERT_FALSE(fyCheckFlockBleName(nullptr));
+}
+
+// ── Flock accessory / Nordic DFU GATT service tests ──────────────────────────
+
+void test_flock_gatt_uuid_known(void) {
+    const char* accessory[] = { FY_FLOCK_ACCESSORY_UUID };
+    const char* dfu[]       = { FY_NORDIC_DFU_UUID };
+    TEST_ASSERT_TRUE(fyCheckFlockGattUUIDFromStrings(accessory, 1, nullptr));
+    TEST_ASSERT_TRUE(fyCheckFlockGattUUIDFromStrings(dfu, 1, nullptr));
+}
+
+void test_flock_gatt_uuid_case_insensitive(void) {
+    const char* uuids[] = { "E8CCBB38-9532-46A8-9FE5-1814DF172E6F" };
+    TEST_ASSERT_TRUE(fyCheckFlockGattUUIDFromStrings(uuids, 1, nullptr));
+}
+
+void test_flock_gatt_uuid_out_param(void) {
+    const char* uuids[] = { FY_FLOCK_ACCESSORY_UUID };
+    char out[41] = {0};
+    TEST_ASSERT_TRUE(fyCheckFlockGattUUIDFromStrings(uuids, 1, out));
+    TEST_ASSERT_EQUAL_STRING(FY_FLOCK_ACCESSORY_UUID, out);
+}
+
+void test_flock_gatt_uuid_no_match(void) {
+    const char* uuids[] = { "12345678-1234-1234-1234-123456789abc" };
+    TEST_ASSERT_FALSE(fyCheckFlockGattUUIDFromStrings(uuids, 1, nullptr));
+    TEST_ASSERT_FALSE(fyCheckFlockGattUUIDFromStrings(nullptr, 0, nullptr));
+}
+
+void test_flock_gatt_uuid_not_raven(void) {
+    // The Flock accessory service must NOT be reported as a Raven UUID — they
+    // are deliberately separate alert types with separate method strings.
+    const char* uuids[] = { FY_FLOCK_ACCESSORY_UUID };
+    TEST_ASSERT_FALSE(fyCheckRavenUUIDFromStrings(uuids, 1, nullptr));
+}
+
+void test_flock_gatt_uuid_count(void) {
+    TEST_ASSERT_EQUAL(2u, (unsigned)FY_BLE_GATT_UUID_COUNT);
+}
+
 // ── BLE manufacturer ID tests ─────────────────────────────────────────────────
 
 void test_ble_mfr_id_known(void) {
@@ -180,11 +307,33 @@ int main(void) {
 
     RUN_TEST(test_lists_are_independent);
 
+    RUN_TEST(test_fw_default_mac_known);
+    RUN_TEST(test_fw_default_mac_case_insensitive);
+    RUN_TEST(test_fw_default_mac_requires_full_match);
+    RUN_TEST(test_fw_default_mac_no_match);
+    RUN_TEST(test_fw_default_mac_count);
+    RUN_TEST(test_qca_oui_is_mfr_tier_only);
+
     RUN_TEST(test_ble_name_exact);
     RUN_TEST(test_ble_name_substring);
     RUN_TEST(test_ble_name_case_insensitive);
     RUN_TEST(test_ble_name_no_match);
     RUN_TEST(test_ble_name_null_and_empty);
+
+    RUN_TEST(test_ble_name_pattern_penguin_serial);
+    RUN_TEST(test_ble_name_pattern_bare_serial);
+    RUN_TEST(test_ble_name_pattern_dfutarg);
+    RUN_TEST(test_ble_name_pattern_fs_ext_battery_exact);
+    RUN_TEST(test_ble_name_pattern_rejects_wrong_digit_counts);
+    RUN_TEST(test_ble_name_pattern_no_match);
+    RUN_TEST(test_ble_name_keyword_and_pattern_both_work);
+
+    RUN_TEST(test_flock_gatt_uuid_known);
+    RUN_TEST(test_flock_gatt_uuid_case_insensitive);
+    RUN_TEST(test_flock_gatt_uuid_out_param);
+    RUN_TEST(test_flock_gatt_uuid_no_match);
+    RUN_TEST(test_flock_gatt_uuid_not_raven);
+    RUN_TEST(test_flock_gatt_uuid_count);
 
     RUN_TEST(test_ble_mfr_id_known);
     RUN_TEST(test_ble_mfr_id_old_incorrect_value);

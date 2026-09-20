@@ -69,6 +69,49 @@ void test_raven_old_style_short_uuids_do_not_match(void) {
     TEST_ASSERT_FALSE(fyCheckRavenUUIDFromStrings(old_short, 2, nullptr));
 }
 
+// ── Raven service RANGE tests (0x3100-0x3500) ────────────────────────────────
+//
+// The named table only holds the round hundred values. The camera advertises
+// services across the whole 0x3100-0x3500 range, and 0x3101/0x3102 — the
+// unauthenticated ones that leak GPS lat/long — are precisely NOT in the table.
+// The range check is what catches them.
+
+void test_raven_range_gps_leaking_services(void) {
+    const char* u3101[] = { "00003101-0000-1000-8000-00805f9b34fb" };
+    const char* u3102[] = { "00003102-0000-1000-8000-00805f9b34fb" };
+    TEST_ASSERT_TRUE(fyCheckRavenUUIDFromStrings(u3101, 1, nullptr));
+    TEST_ASSERT_TRUE(fyCheckRavenUUIDFromStrings(u3102, 1, nullptr));
+}
+
+void test_raven_range_short_form(void) {
+    const char* u[] = { "0x3110" };
+    TEST_ASSERT_TRUE(fyCheckRavenUUIDFromStrings(u, 1, nullptr));
+}
+
+void test_raven_range_bounds(void) {
+    TEST_ASSERT_TRUE(fyCheckRavenServiceRange(0x3100));
+    TEST_ASSERT_TRUE(fyCheckRavenServiceRange(0x3500));
+    TEST_ASSERT_FALSE(fyCheckRavenServiceRange(0x30ff));
+    TEST_ASSERT_FALSE(fyCheckRavenServiceRange(0x3501));
+}
+
+void test_raven_range_rejects_out_of_range(void) {
+    const char* low[]  = { "000030ff-0000-1000-8000-00805f9b34fb" };
+    const char* high[] = { "00003600-0000-1000-8000-00805f9b34fb" };
+    TEST_ASSERT_FALSE(fyCheckRavenUUIDFromStrings(low, 1, nullptr));
+    TEST_ASSERT_FALSE(fyCheckRavenUUIDFromStrings(high, 1, nullptr));
+}
+
+void test_service16_parser(void) {
+    TEST_ASSERT_EQUAL(0x3101, fyService16FromUuidString("00003101-0000-1000-8000-00805f9b34fb"));
+    TEST_ASSERT_EQUAL(0x3101, fyService16FromUuidString("3101"));
+    TEST_ASSERT_EQUAL(0x3101, fyService16FromUuidString("0x3101"));
+    // A genuine 128-bit vendor UUID is not a Bluetooth-base-derived service.
+    TEST_ASSERT_EQUAL(-1, fyService16FromUuidString("e8ccbb38-9532-46a8-9fe5-1814df172e6f"));
+    TEST_ASSERT_EQUAL(-1, fyService16FromUuidString("zzzz"));
+    TEST_ASSERT_EQUAL(-1, fyService16FromUuidString(nullptr));
+}
+
 // ── Raven firmware version estimation tests ───────────────────────────────────
 
 void test_fw_v11x(void) {
@@ -122,6 +165,12 @@ int main(void) {
     RUN_TEST(test_raven_uuid_mixed_list_finds_known);
     RUN_TEST(test_raven_uuid_null_out_buffer_ok);
     RUN_TEST(test_raven_old_style_short_uuids_do_not_match);
+
+    RUN_TEST(test_raven_range_gps_leaking_services);
+    RUN_TEST(test_raven_range_short_form);
+    RUN_TEST(test_raven_range_bounds);
+    RUN_TEST(test_raven_range_rejects_out_of_range);
+    RUN_TEST(test_service16_parser);
 
     RUN_TEST(test_fw_v11x);
     RUN_TEST(test_fw_v12x);

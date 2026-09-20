@@ -88,6 +88,18 @@ tooling (`api/*.py`) in this repository.
   through its `FY_STAT_BUMP()` macro for exactly this reason. Verify any
   new counter by checking that a build of the env that compiles the file
   reports **zero** `warning:` lines, not just zero errors.
+- **One source of truth per detection-pattern table.** All pattern data lives
+  in `fy_detect.h` and nowhere else. `main.cpp` previously kept a *second*,
+  lowercase copy of the BLE name list (`ble_flock_names[]`, matched by its own
+  local `bleNameContains()`), so adding a name to one list silently left the
+  other behind — and a naming form only the pattern matcher can express (a bare
+  10-digit serial, `Penguin-NNNNNNNNNN`, `DfuTarg`) was invisible to the
+  substring copy. Both duplicates are gone; `main.cpp` now calls
+  `fyCheckFlockBleName()`. The beacon tester likewise derives its payloads from
+  the shared tables (`fy_exact_macs[]`, `FY_FLOCK_ACCESSORY_UUID`,
+  `fy_ble_names[]`) instead of re-hardcoding them. When a signature needs a
+  *shape* rule rather than a substring, add it to the shared header so the host
+  unit tests (`pio test -e native`) can cover it.
 
 ## Python (`api/`)
 

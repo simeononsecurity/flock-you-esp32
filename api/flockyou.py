@@ -1,6 +1,7 @@
 from flask import Flask, render_template, request, jsonify, send_file
 import json
 import csv
+import re
 import os
 from datetime import datetime
 import time
@@ -93,6 +94,205 @@ def save_settings():
         print(f"Error saving settings: {e}")
 
 # Load OUI database
+# ---------------------------------------------------------------------------
+# Firmware-derived detection signatures
+# ---------------------------------------------------------------------------
+#
+# The subset of our detection set extracted from an actual Flock Safety ALPR
+# camera firmware dump (Qualcomm MSM8953 + QCA9377, Android 8.1, codename
+# "hpnotiq", 2026-09-16) — as distinct from the community field-research OUI
+# list (@NitekryDPaul / DeFlockJoplin). The match itself runs on the ESP32
+# (fy_detect.h / fy_confidence.h); this copy exists so the dashboard can label
+# which detections rest on firmware-derived evidence, and so imported/replayed
+# records get exactly the same tags as live ones.
+#
+# Provenance: datasets/firmware_derived_signatures.md
+FIRMWARE_TARGET_OUIS = (
+    "b4:1e:52",   # Flock Safety's own IEEE MA-L registration
+    "00:03:7f",   # Qualcomm Atheros QCA9377 default-radio prefix
+)
+
+FIRMWARE_DEFAULT_MACS = (
+    "00:03:7f:50:00:01",   # bdwlan30.bin / fakeboar.bin factory default
+    "00:03:7f:4f:00:16",   # otp30.bin factory default
+)
+
+FIRMWARE_SSID_KEYWORDS = (
+    "flock",           # "Flock-XXXXXX" SoftAP + bare "Flock"
+    "penguin",         # Penguin battery pack
+    "fs ext battery",  # FS Ext Battery pack
+)
+
+FIRMWARE_BLE_MFG_IDS = (0x09C8,)   # XUNTONG (Penguin pack, serial in payload)
+
+FIRMWARE_BLE_GATT_UUIDS = (
+    "e8ccbb38-9532-46a8-9fe5-1814df172e6f",  # Flock accessory service
+    "00001530-1212-efde-1523-785feabcd123",  # Nordic legacy DFU service
+)
+
+FIRMWARE_RAVEN_SVC_RANGE = (0x3100, 0x3500)
+
+_BLE_NAME_PATTERNS = (
+    (re.compile(r"^penguin-\d{10}$", re.IGNORECASE), "ble_name:penguin_serial"),
+    (re.compile(r"^\d{10}$"), "ble_name:bare_serial"),
+    (re.compile(r"^fs ext battery$", re.IGNORECASE), "ble_name:fs_ext_battery"),
+    (re.compile(r"^dfutarg$", re.IGNORECASE), "ble_name:dfutarg"),
+)
+
+# The firmware reports *which* signature matched via detection_method rather
+# than sending the raw UUID/company ID for every hit, so the method strings the
+# firmware-derived detectors emit map onto the same tags.
+_METHOD_TAGS = {
+    "fw_default_mac":  "mac:fw_default",
+    "ble_flock_gatt":  "gatt:flock_accessory",
+    "ble_mfr_id":      "ble_mfg:0x09c8",
+    "ble_raven_uuid":  "gatt:raven_service",
+}
+
+
+def _normalized_mac(value) -> str:
+    """Lower-case colon-separated MAC, tolerating dashes and None."""
+    if not value:
+        return ""
+    return str(value).replace("-", ":").strip().lower()
+
+
+def _parse_int_flexible(value):
+    """Accept an int, a decimal string ("2504") or a hex string ("0x09c8")."""
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    text = str(value).strip()
+    for base in (0, 16):
+        try:
+            return int(text, base)
+        except (ValueError, TypeError):
+            continue
+    return None
+
+
+def _gatt_signatures(uuids) -> list:
+    """Signature tags for advertised GATT service UUIDs."""
+    tags = []
+    for raw in uuids:
+        text = str(raw).strip().lower()
+        if text in FIRMWARE_BLE_GATT_UUIDS:
+            tags.append("gatt:flock_accessory" if "e8ccbb38" in text
+                        else "gatt:nordic_dfu")
+            continue
+        # 16-bit service, either "0x3101"/"3101" or the canonical
+        # "00003101-0000-1000-8000-00805f9b34fb" expansion NimBLE emits — the
+        # same two shapes fyService16FromUuidString() accepts on the ESP32.
+        value = _parse_int_flexible(text)
+        if value is None:
+            match = re.match(
+                r"^([0-9a-f]{8})-0000-1000-8000-00805f9b34fb$", text)
+            if match:
+                # The 16-bit value is the LOW half of that first 32-bit group:
+                # "00003101-…" is service 0x3101, NOT 0x0000. (Upstream's
+                # equivalent regex captures only the first 4 hex digits, which
+                # reads the high half and so silently fails to match the exact
+                # canonical form NimBLE emits — this mask is deliberate.)
+                value = int(match.group(1), 16) & 0xFFFF
+        if (value is not None
+                and FIRMWARE_RAVEN_SVC_RANGE[0] <= value <= FIRMWARE_RAVEN_SVC_RANGE[1]):
+            tags.append(f"gatt:raven_service:0x{value:04x}")
+    return tags
+
+
+def firmware_signature_matches(data: dict) -> list:
+    """Firmware-derived signature tags for one detection record.
+
+    Returns tags such as "oui:b4:1e:52", "mac:fw_default",
+    "ssid_keyword:penguin" or "ble_mfg:0x09c8". Empty list when nothing in the
+    firmware-derived set matched — a plain community-OUI hit, for example.
+    """
+    if not isinstance(data, dict):
+        return []
+    tags = []
+
+    mac = _normalized_mac(data.get("mac_address"))
+    if mac:
+        if mac in FIRMWARE_DEFAULT_MACS:
+            # Factory-default radio address — the specific form, not just OUI.
+            tags.append("mac:fw_default")
+        else:
+            for oui in FIRMWARE_TARGET_OUIS:
+                if mac.startswith(oui):
+                    tags.append(f"oui:{oui}")
+                    break
+
+    method_tag = _METHOD_TAGS.get(str(data.get("detection_method") or "").lower())
+    if method_tag:
+        tags.append(method_tag)
+
+    ssid = data.get("ssid")
+    if ssid:
+        lowered = str(ssid).lower()
+        for keyword in FIRMWARE_SSID_KEYWORDS:
+            if keyword in lowered:
+                tags.append(f"ssid_keyword:{keyword}")
+
+    name = data.get("device_name") or data.get("name")
+    if name:
+        text = str(name).strip()
+        for pattern, tag in _BLE_NAME_PATTERNS:
+            if pattern.match(text):
+                tags.append(tag)
+                break
+        # Substring pass, mirroring the firmware's fyCheckBLEName() keyword list
+        # (so e.g. "Penguin-BLE" or "DfuTarg-1" still tag, not just the exact
+        # shapes above). "Flock"/"Raven"/"Pigvision" are deliberately NOT here —
+        # they are community-named variants, not firmware-dump strings, and this
+        # tag set means "evidence from the firmware image".
+        lowered_name = text.lower()
+        for keyword in ("penguin", "fs ext battery", "dfutarg"):
+            if keyword in lowered_name:
+                tags.append(f"ble_name:{keyword.replace(' ', '_')}")
+
+    company = _parse_int_flexible(
+        data.get("company_id") or data.get("mfg_company_id")
+        or data.get("manufacturer_company_id"))
+    if company is not None and company in FIRMWARE_BLE_MFG_IDS:
+        tags.append(f"ble_mfg:0x{company:04x}")
+
+    uuids = []
+    for key in ("service_uuids", "gatt_services", "service_uuid"):
+        value = data.get(key)
+        if isinstance(value, (list, tuple)):
+            uuids.extend(value)
+        elif value:
+            uuids.append(value)
+    tags.extend(_gatt_signatures(uuids))
+
+    # Dedupe, preserving order (a UUID list can repeat a service).
+    seen = set()
+    unique = []
+    for tag in tags:
+        if tag not in seen:
+            seen.add(tag)
+            unique.append(tag)
+    return unique
+
+
+def tag_firmware_signatures(data: dict) -> dict:
+    """Merge firmware-derived tags onto a detection dict, in place.
+
+    Sets two additive fields (existing JSON fields are untouched):
+      matched_signatures — ordered union of every firmware-derived signature
+                           tag that hit, including any already on the record.
+      firmware_sig       — True when at least one such signature matched.
+    """
+    matched = list(data.get("matched_signatures") or [])
+    for tag in firmware_signature_matches(data):
+        if tag not in matched:
+            matched.append(tag)
+    data["matched_signatures"] = matched
+    data["firmware_sig"] = bool(matched)
+    return data
+
+
 def load_oui_database():
     """Load the IEEE OUI database for manufacturer lookups"""
     global oui_database
@@ -291,6 +491,13 @@ def flock_reader():
                                         }
                                         if esp_gps.get('accuracy') is not None:
                                             data['gps']['accuracy'] = esp_gps['accuracy']
+                                    # Tag firmware-derived signature hits before
+                                    # ingest (OUI / default-MAC / SSID keyword /
+                                    # BLE name+GATT; see the signature block at the
+                                    # top of this file). Done here rather than in
+                                    # add_detection_from_serial() so replayed serial
+                                    # captures get identical tags to live ones.
+                                    tag_firmware_signatures(data)
                                     add_detection_from_serial(data)
                                 else:
                                     print(f"JSON data without detection_method: {data}")
@@ -470,6 +677,19 @@ def add_detection_from_serial(data):
         # Preserve detection_method if not already set
         if not existing_detection.get('detection_method') and data.get('detection_method'):
             existing_detection['detection_method'] = data.get('detection_method')
+        
+        # Union in any firmware-derived signature tags from this observation, so
+        # a device first seen without a firmware-signature hit and later seen
+        # with one still reads as firmware-matched (and the flag never
+        # disappears once earned).
+        new_sigs = data.get('matched_signatures') or []
+        if new_sigs:
+            merged = existing_detection.get('matched_signatures') or []
+            for sig in new_sigs:
+                if sig not in merged:
+                    merged.append(sig)
+            existing_detection['matched_signatures'] = merged
+            existing_detection['firmware_sig'] = True
         
         # Update GPS if new data is available
         if data.get('gps'):
@@ -691,6 +911,11 @@ def add_detection():
     if 'mac_address' in data:
         data['manufacturer'] = lookup_manufacturer(data['mac_address'])
     
+    # Tag firmware-derived signature hits (see the signature block at the top of
+    # this file). REST-posted detections take this path; serial-sourced ones are
+    # tagged in the reader thread.
+    tag_firmware_signatures(data)
+    
     # Add server timestamp
     data['server_timestamp'] = datetime.now().isoformat()
     
@@ -843,6 +1068,7 @@ def export_csv():
             'timestamp', 'detection_time', 'server_timestamp', 'protocol', 'detection_method',
             'ssid', 'device_name', 'mac_address', 'manufacturer', 'alias', 'rssi', 'last_rssi', 
             'signal_strength', 'channel', 'last_channel', 'detection_count',
+            'firmware_sig', 'matched_signatures',
             'latitude', 'longitude', 'altitude', 'gps_timestamp', 'satellites', 'fix_quality', 'gps_time_diff', 'gps_match_quality', 'timestamp_source'
         ]
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
@@ -867,6 +1093,8 @@ def export_csv():
                 'channel': detection.get('channel'),
                 'last_channel': detection.get('last_channel'),
                 'detection_count': detection.get('detection_count', 1),
+                'firmware_sig': detection.get('firmware_sig', False),
+                'matched_signatures': '; '.join(detection.get('matched_signatures') or []),
                 'latitude': gps_data.get('latitude'),
                 'longitude': gps_data.get('longitude'),
                 'altitude': gps_data.get('altitude'),

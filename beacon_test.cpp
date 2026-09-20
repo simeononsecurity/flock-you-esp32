@@ -21,7 +21,7 @@
 //   1. Flash this to a SEPARATE M5Atom Lite:
 //        pio run -e m5atom-lite-beacon -t upload
 //   2. Power it on near your real detector (running the normal firmware).
-//   3. It cycles through 12 scenarios (one per detection path) automatically
+//   3. It cycles through 15 scenarios (one per detection path) automatically
 //      every SCENARIO_INTERVAL_MS, in a shuffled order that guarantees full
 //      coverage every pass. Press the button (GPIO39) to force-fire the
 //      next scenario immediately instead of waiting.
@@ -43,6 +43,16 @@
 //   9  BLE mfr-ID             — adv mfr data = 0x09C8 (XUNTONG / Flock BLE ID)
 //   10 BLE Raven UUID         — adv service UUID = random pick from fy_raven_uuids[]
 //   11 BLE device name        — adv name = random pick from fy_ble_names[]
+//   12 ALERT_FW_DEFAULT_MAC   — probe response, addr2 = an EXACT firmware-default
+//                               QCA9377 radio MAC from fy_exact_macs[] (the
+//                               factory default burned into the camera image)
+//   13 ALERT_BLE_FLOCK_GATT   — adv service UUID = the Flock accessory GATT
+//                               service (e2e path shared with the Nordic DFU
+//                               UUID, which has no scenario of its own)
+//   14 bare-serial BLE name   — adv name = a bare 10-digit serial, i.e. the
+//                               fyCheckBleNamePattern() shape match that the
+//                               substring keyword list (scenario 11) cannot
+//                               express
 //
 // WiFi scenarios sweep channels {1,6,11} (several bursts each) so they
 // reliably overlap the real detector's 250 ms-dwell hop cycle regardless of
@@ -91,7 +101,7 @@ static const uint8_t sweepChannels[SWEEP_CHANNELS_COUNT] = {1, 6, 11};
 #define BURST_GAP_MS           8        // gap between individual frame sends
 
 
-#define NUM_SCENARIOS 12
+#define NUM_SCENARIOS 15
 
 static const uint8_t BROADCAST_MAC[6] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
 static const uint8_t GA_DUMMY_MAC[6]  = {0x00,0x11,0x22,0xAA,0xBB,0xCC}; // GA, no OUI table match
@@ -148,6 +158,15 @@ static void parseOui(const char* oui, uint8_t* out3) {
   out3[0] = (uint8_t)strtol(oui,     nullptr, 16);
   out3[1] = (uint8_t)strtol(oui + 3, nullptr, 16);
   out3[2] = (uint8_t)strtol(oui + 6, nullptr, 16);
+}
+
+// Parses a full "xx:xx:xx:xx:xx:xx" MAC string into 6 bytes (byte b sits at
+// character offset b*3). Used by the firmware-default-MAC scenario so the
+// tester transmits exactly what fy_detect.h's fy_exact_macs[] declares, with no
+// second hardcoded copy to drift out of sync.
+static void parseMac(const char* macStr, uint8_t* out6) {
+  for (int b = 0; b < 6; b++)
+    out6[b] = (uint8_t)strtol(macStr + b * 3, nullptr, 16);
 }
 
 // Builds a 6-byte MAC = <3-byte OUI prefix> + 3 random suffix bytes.
@@ -387,12 +406,56 @@ static void scenario11_BleName() {
   Serial.printf("[beacon] 11 BLE_NAME              name=%s\n", name);
 }
 
+// ── Firmware-derived scenarios (Flock camera firmware dump, 2026-09-16) ──────
+
+// Exact firmware-default QCA9377 radio MAC in addr2. This is the one signature
+// that must match all SIX bytes (a bare 00:03:7f OUI match is only mfr-tier), so
+// the detector should report it as method=fw_default_mac with conf=55 — NOT as
+// oui_mfr. Checking that distinction in the detector's log is the point of this
+// scenario.
+static void scenario12_FwDefaultMac() {
+  uint8_t mac[6];
+  // Derive from fy_detect.h's table rather than hardcoding a second copy.
+  parseMac(fy_exact_macs[random(0, (long)FY_EXACT_MAC_COUNT)], mac);
+
+  uint8_t buf[BF_MAX_FRAME];
+  size_t len = bfBuildBeaconLike(buf, BF_FC_PROBE_RESP, BROADCAST_MAC, mac,
+                                  GA_DUMMY_MAC2, "TestNet-FWDefMAC", sweepChannels[0]);
+  txSweep(buf, len);
+
+  char s[18]; macToStr(mac, s, sizeof(s));
+  Serial.printf("[beacon] 12 ALERT_FW_DEFAULT_MAC addr2=%s (exact match required)\n", s);
+}
+
+// Flock accessory GATT service (firmware dump). The Nordic legacy DFU UUID
+// shares this exact code path in the detector (same table, same alert type), so
+// one scenario covers the gate for both.
+static void scenario13_BleFlockGatt() {
+  NimBLEAdvertisementData data;
+  data.setCompleteServices(NimBLEUUID(FY_FLOCK_ACCESSORY_UUID));
+  data.setName("FYTest");
+  bleAdvertiseAndHold(data, 1200);
+  Serial.printf("[beacon] 13 BLE_FLOCK_GATT       uuid=%s\n", FY_FLOCK_ACCESSORY_UUID);
+}
+
+// A bare 10-digit serial name — the shape fyCheckBleNamePattern() matches but
+// the substring keyword list cannot (scenario 11 only covers keyword names).
+// Exercises ALERT_BLE_NAME through the *pattern* path rather than the keyword one.
+static void scenario14_BleSerialName() {
+  const char* name = "9876543210";
+  NimBLEAdvertisementData data;
+  data.setName(name);
+  bleAdvertiseAndHold(data, 1200);
+  Serial.printf("[beacon] 14 BLE_SERIAL_NAME      name=\"%s\" (bare 10-digit)\n", name);
+}
+
 typedef void (*ScenarioFn)();
 static const ScenarioFn scenarios[NUM_SCENARIOS] = {
   scenario0_OuiAddr2, scenario1_WildcardProbe, scenario2_OuiAddr1,
   scenario3_OuiAddr3, scenario4_Ssid,          scenario5_LaaSsid,
   scenario6_OuiMfr,   scenario7_SoundThinking, scenario8_SeqMacPair,
   scenario9_BleMfrId, scenario10_BleRavenUuid, scenario11_BleName,
+  scenario12_FwDefaultMac, scenario13_BleFlockGatt, scenario14_BleSerialName,
 };
 
 static void fireNextScenario() {

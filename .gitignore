@@ -18,6 +18,11 @@ idf_component.yml.orig
 # macOS junk
 .DS_Store
 
+# Python bytecode (api/flockyou.py is imported by the Flask entrypoint, so
+# __pycache__/ appears as soon as it or any helper module is compiled)
+__pycache__/
+*.pyc
+
 # SPIFFS runtime session files (written by firmware to the ESP32 filesystem,
 # never source-controlled — they contain field detection data)
 session.json
