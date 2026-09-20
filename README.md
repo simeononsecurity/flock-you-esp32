@@ -42,6 +42,8 @@ This package contains everything you need to build and deploy your own Flock-You
 - **[PCB Design Package](hardware/pcb/README.md)** - Schematic, BOM, assembly guide
 - **[Detection Methods](.clinerules/04-detection-methods.md)** - Detection paths and confidence scoring
 - **[Firmware-Derived Signatures](datasets/firmware_derived_signatures.md)** - Signature provenance
+- **[Printable Quick Start](docs/print/quick-start-4x6.pdf)** - Plain-language pocket card for
+  non-technical users ([8.5x11 sheet version](docs/print/quick-start-letter.pdf))
 
 ---
 

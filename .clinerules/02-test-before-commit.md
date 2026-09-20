@@ -160,3 +160,14 @@ before considering any firmware change complete.
   A ~20-line Python pass over `git ls-files '*.md'` covers the whole repo;
   it caught a real broken anchor in the same change that introduced the
   link-checking idea, so it pays for itself immediately.
+- **Re-generate the printable guides if you touch `docs/print/`.**
+  `docs/print/quick-start-*.pdf` are committed artifacts built from
+  `docs/print/make_quick_start_pdfs.py`, so editing the guide text without
+  re-running the generator leaves the PDFs stale — and the PDFs are the copy
+  non-technical users actually read. Run
+  `python3 docs/print/make_quick_start_pdfs.py` after any edit there.
+  Add `--check` to measure only: each page's content height is compared with
+  its fixed card height and an overflowing page exits non-zero. That gate
+  exists because `.page` uses `overflow: hidden`, so over-long text is
+  clipped in the PDF with no error anywhere — exactly the kind of silent
+  failure this project has been bitten by before.
