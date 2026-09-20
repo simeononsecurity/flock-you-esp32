@@ -13,7 +13,6 @@ Ported to standard ESP32 hardware for maximum accessibility and cost savings.
 
 - **[Setup Instructions](SETUP_INSTRUCTIONS.md)** - Get started in 3 steps
 - **[Solderless Build Guide](SOLDERLESS_BUILD_GUIDE.md)** - No soldering required! ($9-11 total)
-- **[3D Printable Case](CASE_DESIGN.md)** - Professional enclosure design
 - **[Business Analysis](../BUSINESS_ANALYSIS.md)** - Market opportunity & financials
 - **[Porting Guide](../ESP32_PORTING_GUIDE.md)** - Technical documentation
 
@@ -34,9 +33,10 @@ This package contains everything you need to build and deploy your own Flock-You
   constant that holds each one)
 
 ### 🔧 Hardware (`/hardware`)
-- **openscad/** - Parametric case source files
-- **stl/** - Ready-to-print STL files (coming soon)
-- **assembly_photos/** - Step-by-step build photos (coming soon)
+- **pcb/** - Custom PCB design package (schematic, BOM, assembly guide)
+
+**Note:** there is no published case design — see
+[hardware/README.md](hardware/README.md) for why.
 
 ### 📚 Documentation
 - Complete user manuals
@@ -52,14 +52,13 @@ This package contains everything you need to build and deploy your own Flock-You
 |------------|------------|------------|-------------------|
 | **Minimal** | ESP32 + USB cable | **$5** | ✅ 100% |
 | **Breadboard** | + Buzzer + breadboard | **$9-11** | ✅ 100% |
-| **With Case** | + 3D printed enclosure | **$10-12** | ✅ 100% |
 | **OUI-SPY** | Pre-built board | **$85** | ✅ 100% |
 
 **Same detection performance, 85% cost savings!**
 
 ---
 
-## 🎯 Three Ways to Build
+## 🎯 Two Ways to Build
 
 ### Option 1: LED-Only (Cheapest)
 **Cost:** $5 | **Time:** 5 minutes | **Difficulty:** ⭐☆☆☆☆
@@ -76,14 +75,6 @@ This package contains everything you need to build and deploy your own Flock-You
 - Audio chirps on detection
 - No soldering required
 - [Full Guide](SOLDERLESS_BUILD_GUIDE.md)
-
-### Option 3: Enclosed Build (Professional)
-**Cost:** $10-12 | **Time:** 15 minutes + 3hr print | **Difficulty:** ⭐⭐⭐☆☆
-
-- 3D printed case with snap-fit lid
-- LED light pipe
-- USB strain relief
-**[Case Design](CASE_DESIGN.md)**
 
 ---
 
@@ -285,7 +276,6 @@ test suite covers:
 ### Visual
 **Onboard LED flashes** on every detection
 - Works even without buzzer
-- Visible through case light pipe
 
 ---
 
@@ -390,7 +380,7 @@ pio run -e lilygo-t-dongle-c5-ble -t upload
 ✅ **Passive detection** (no transmission, legal)  
 ✅ **Proven accuracy** (field-tested research)  
 ✅ **Open source** (modify freely)  
-✅ **Portable** (pocket-sized with case)  
+✅ **Portable** (pocket-sized)  
 ✅ **Expandable** (add GPS, batteries, external antenna)  
 
 ---
@@ -416,7 +406,7 @@ pio run -e lilygo-t-dongle-c5-ble -t upload
 - Identify high-surveillance zones
 
 ### Vehicle Integration
-- Dashboard mount (case design included)
+- Dashboard mount
 - USB power from car
 - Audio alerts while driving
 - Optional battery for portability
@@ -434,17 +424,6 @@ pio run -e lilygo-t-dongle-c5-ble -t upload
 | Male-Male Jumpers (3) | 1 | <$1 | <$1 |
 | USB Micro Cable | 1 | $1 | $1 |
 | **Subtotal** | | | **$9-11** |
-
-### 3D Printed Case (Optional)
-| Part | Material | Cost |
-|------|----------|------|
-| Case Base | 15g PLA | $0.30-0.50 |
-| Case Lid | 8g PLA | $0.15-0.25 |
-| LED Light Pipe | 2g Clear | $0.05 |
-| Mounting Bracket | 12g PLA | $0.25 |
-| **Subtotal** | | **$0.75-1.00** |
-
-**Grand Total:** $10-12
 
 ---
 
@@ -468,12 +447,6 @@ pio run -e lilygo-t-dongle-c5-ble -t upload
 - Verify partition file exists
 - Clean build: `pio run -t clean`
 
-### Case doesn't fit?
-- Scale STL by 101% for looser fit
-- Sand snap-fit tabs if too tight
-- Check component dimensions against specs
-- Use OpenSCAD to customize
-
 **[Full Troubleshooting Guide](SOLDERLESS_BUILD_GUIDE.md#troubleshooting)**
 
 ---
@@ -485,7 +458,6 @@ pio run -e lilygo-t-dongle-c5-ble -t upload
 - 🐛 Report bugs & issues
 - 💡 Suggest features
 - 📝 Improve documentation
-- 🎨 Design case variants
 - 🧪 Field-test and report accuracy
 - 🗺️ Submit camera locations to DeFlock
 
@@ -512,7 +484,6 @@ This project is licensed **CC-BY-SA 4.0**:
 ### This ESP32 Port
 - Modified for standard ESP32 (4MB flash, UART)
 - Solderless assembly guide
-- 3D printable case design
 - Business analysis & documentation
 - Community testing & feedback
 
@@ -553,19 +524,17 @@ This project is licensed **CC-BY-SA 4.0**:
 ### Hardware
 - **ESP32:** [espressif.com](https://www.espressif.com/en/products/socs/esp32)
 - **PlatformIO:** [platformio.org](https://platformio.org/)
-- **OpenSCAD:** [openscad.org](https://openscad.org/)
 
 ### Learn More
 - **WiFi Sniffing:** [ESP32 Promiscuous Mode](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/network/esp_wifi.html)
-- **3D Printing:** [All3DP Guides](https://all3dp.com/tag/3d-printing-guides/)
 - **Privacy Tech:** [EFF Surveillance Self-Defense](https://ssd.eff.org/)
 
 ---
 
 ## 📈 Project Stats
 
-- **Hardware Cost:** $5-12 (vs $85 OUI-SPY)
-- **Build Time:** 5-15 minutes
+- **Hardware Cost:** $5-11 (vs $85 OUI-SPY)
+- **Build Time:** 5-10 minutes
 - **Detection Accuracy:** Same as premium hardware
 - **Supported Boards:** Any ESP32 with 4MB+ flash
 - **Community:** Growing!
@@ -574,11 +543,10 @@ This project is licensed **CC-BY-SA 4.0**:
 
 ## 🎉 Get Started!
 
-**You're 3 steps away from detecting surveillance:**
+**You're 2 steps away from detecting surveillance:**
 
 1. **[Buy hardware](https://amazon.com/s?k=ESP32+DevKit)** → $5-11
 2. **[Flash firmware](SETUP_INSTRUCTIONS.md)** → 10 minutes
-3. **[Build case](CASE_DESIGN.md)** → Optional
 
 **Questions?** Check the docs or open an issue!
 

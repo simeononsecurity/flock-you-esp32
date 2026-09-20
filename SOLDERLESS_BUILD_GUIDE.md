@@ -384,19 +384,6 @@ Re-upload firmware. LED still works for visual feedback.
 
 ---
 
-## 🎯 Next Step: 3D Printed Case
-
-Once your solderless build is working, check out `CASE_DESIGN.md` for a 3D printable enclosure that holds everything together professionally!
-
-The case design accommodates:
-- Standard ESP32 DevKit (30-pin)
-- Breadboard-mounted buzzer
-- USB cable strain relief
-- Mounting holes for car dashboard
-- LED light pipe for onboard LED
-
----
-
 ## 💡 Pro Tips
 
 ### Tip 1: Color-Code Your Wires
@@ -455,7 +442,6 @@ You now have a **fully functional Flock-You detector** without touching a solder
 **Next steps:**
 1. Flash firmware and test
 2. Drive near known Flock camera locations
-3. Build 3D printed case (optional)
-4. Add GPS module for wardriving (advanced)
+3. Add GPS module for wardriving (advanced)
 
 Happy detecting! 🎉

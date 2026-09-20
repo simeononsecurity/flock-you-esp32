@@ -147,7 +147,6 @@ See **SCHEMATIC.md** for pinout and assembly notes.
 - **Board Size:** 50mm × 35mm × 1.6mm
 - **Weight:** ~8g (assembled)
 - **Mounting Holes:** 4× M2.5 (optional)
-- **Fits:** 3D printed case (see `/hardware/openscad/`)
 
 ### Environmental
 - **Operating Temp:** 0°C to 50°C (ESP32 spec)
@@ -252,27 +251,11 @@ See **ASSEMBLY_GUIDE.md** troubleshooting section for common issues.
 
 ---
 
-## 🎨 Case Design
-
-A 3D-printable case is available in `/hardware/openscad/flock-you-case.scad`
-
-**Note:** The original case was designed for breadboard assembly. The PCB version will need a modified case design with:
-- USB-C cutout on side
-- Smaller internal volume (no breadboard)
-- Button access holes (Boot/Reset)
-- LED light pipe
-- Buzzer acoustic port
-
-Case redesign is TODO. Current PCB can be used without case for testing.
-
----
-
 ## 🤝 Contributing
 
 Improvements welcome:
 
 - **PCB Layout:** Create KiCad files from schematic
-- **Case Design:** Update OpenSCAD model for PCB version
 - **Testing:** Report assembly issues, component replacements
 - **Optimization:** Suggest cheaper/better components
 - **Documentation:** Improve guides, add photos
