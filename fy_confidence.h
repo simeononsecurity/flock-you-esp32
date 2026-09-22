@@ -61,6 +61,12 @@
 #define CS_OUI_ADDR3            12  // BSSID fallback when addr2 is randomised
 #define CS_WILDCARD_PROBE       22  // empty-SSID probe req from known OUI src
                                     //   (stacks with CS_OUI_ADDR2 → 62)
+// Probe Request whose Information Elements match the drive-tested LiteOn/USI
+// Flock fingerprint (fy_detect.h's fyCheckFlockIeSignature()). An ADDITIVE
+// bonus on top of ALERT_WILDCARD_PROBE, never a replacement gate — a camera on
+// firmware we have not fingerprinted must stay detectable, so this can only
+// raise confidence, never remove recall. See DETECTION_IMPROVEMENTS.md §7.
+#define CS_IE_SIG_BONUS         18  // IE signature matched (62 → 80 on high tier)
 #define CS_SSID_FLOCK           32  // SSID contains "flock" (any case)
 #define CS_SSID_FLOCK_CAM_NET   45  // exact "Flock Camera net." — very specific
 #define CS_LAA_MAC              12  // locally-administered MAC + Flock SSID
@@ -221,6 +227,17 @@ static bool IRAM_ATTR matchSoundThinkingOui(const uint8_t* mac) {
 
 // Backward-compat wrapper: covers high + mfr — used by addr1 / addr3 checks
 // where distinguishing between tables is not needed.
+//
+// DELIBERATE ASYMMETRY with matchFlockHighOui(), do not "fix" it:
+// this wrapper rejects locally-administered MACs *before* consulting either
+// table, so matchOuiRaw(82:6b:f2:…) is false while matchFlockHighOui(82:6b:f2:…)
+// is true. That is correct, not a bug. 82:6b:f2 (DeFlockJoplin's 12th camera)
+// genuinely has the LAA bit set, and it must still match on addr2 — which is
+// why the guard is absent from matchFlockHighOui(). addr1/addr3, by contrast,
+// carry the *receiver/BSSID* address: a locally-administered value there is a
+// randomised (phone-like) MAC, not fixed infrastructure, so filtering it is
+// what keeps this path from firing on unrelated consumer devices. The LAA-bit
+// decision belongs to the SSID path (ALERT_LAA_SSID), not here.
 static bool IRAM_ATTR matchOuiRaw(const uint8_t* mac) {
   if (mac[0] & 0x02) return false;
   return matchFlockHighOui(mac) || matchFlockMfrOui(mac);
@@ -430,6 +447,16 @@ static uint8_t IRAM_ATTR computeConfidence(AlertType type, const uint8_t* mac,
 // we instead compute this before enqueueing (see wifiSniffer in main.cpp).
 static uint8_t IRAM_ATTR applySeqMacBonus(uint8_t base) {
   int s = (int)base + CS_SEQ_MAC_PAIR;
+  if (s > 100) s = 100;
+  return (uint8_t)s;
+}
+
+// IE-fingerprint bonus: added when a wildcard-probe detection's Information
+// Elements match the drive-tested Flock LiteOn/USI signature. Applied at the
+// call site in wifiSniffer() before enqueueing, exactly like applySeqMacBonus
+// above, because an already-queued alert cannot be revised retroactively.
+static uint8_t IRAM_ATTR applyIeSigBonus(uint8_t base) {
+  int s = (int)base + CS_IE_SIG_BONUS;
   if (s > 100) s = 100;
   return (uint8_t)s;
 }

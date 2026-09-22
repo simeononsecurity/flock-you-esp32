@@ -133,10 +133,11 @@ pio run -e esp32dev-ble -t upload && pio device monitor
 
 **No camera nearby? Use the built-in beacon tester.** Flash `m5atom-lite-beacon`
 (from the web flasher, or `pio run -e m5atom-lite-beacon -t upload`) to a
-*second* board and leave it powered near your detector. It broadcasts all **15
+*second* board and leave it powered near your detector. It broadcasts all **17
 test scenarios** — one per detection path, including the firmware-derived ones
 (exact factory-default MAC, Flock accessory GATT service, bare-serial BLE name)
-— on a rotating schedule. Each scenario derives its payload from `fy_detect.h`,
+and the IE-fingerprint / `test_flck` cases — on a rotating schedule. Each
+scenario derives its payload from `fy_detect.h`,
 so the tester cannot drift out of sync with the detector's tables.
 
 If a scenario is not detected, check the **tester's** `[beacon] WARN` lines
@@ -161,7 +162,7 @@ This firmware uses **five research-proven techniques** with a confidence score (
 - Monitors 2.4 GHz management & data frames
 - **Four OUI confidence tiers** (PR#39 + firmware-derived set):
   - **HIGH** (33 OUIs) — exclusively Flock Safety registered → score 40, always alerts
-  - **MFR** (7 OUIs) — Liteon/USI contract manufacturer **+ `00:03:7f` Qualcomm Atheros (the camera's QCA9377 radio)** → score 20, silent log only
+  - **MFR** (8 OUIs) — Liteon/USI contract manufacturer **+ `00:03:7f` Qualcomm Atheros (the camera's QCA9377 radio)** → score 20, silent log only. Liteon OUIs live here rather than in HIGH (`f4:6a:dd`, `f8:a2:d6`, `14:b5:cd`) because Liteon silicon ships in unrelated consumer gear too.
   - **SoundThinking** (1 OUI) — acoustic sensor co-deployed with Flock → score 35, alerts
   - **FW-default MAC** (2 full addresses) — `00:03:7f:50:00:01` / `00:03:7f:4f:00:16`, the **factory-default** QCA9377 radio MACs baked into the camera firmware image → score 55, alerts. Matched byte-for-byte, because the bare `00:03:7f` OUI is shared with every other Atheros device on earth; only an *unprovisioned* unit still transmits them.
 - **addr1 receiver-side detection** (catches sleeping cameras)
@@ -170,10 +171,22 @@ This firmware uses **five research-proven techniques** with a confidence score (
 ### 2. Wildcard Probe Signature (DeFlockJoplin)
 - Flock cameras send **probe requests with empty SSID**
 - Combined score OUI+probe = 62 → HIGH CONFIDENCE on first match
+- **IE fingerprint bonus (upstream signature):** the probe's Information
+  Elements are also walked and encoded as a signature string, compared against
+  the drive-tested LiteOn/USI fingerprint
+  `2,12,127,221:506f9a16030103,45,191,221:0050f208000000` (from
+  colonelpanichacks/flock-you). A match adds **+18** (62 → 80).
+  It is **additive only** — never a replacement gate — so a camera on firmware
+  we haven't fingerprinted still fires at 62. Counter: `iesig=` in the
+  `stats gate` heartbeat line.
 - Field-tested: 11/12 cameras detected, only 2 false positives
 
 ### 3. SSID Pattern Matching — including LAA-MAC cameras (issue #43)
-- Patterns: `"Flock Camera net."`, `"Flock-XXXXXX"`, `"FLOCK-XXXXXX"`, `"penguin"`, `"pigvision"`, `"fs ext battery"`
+- Patterns: `"Flock Camera net."`, `"Flock-XXXXXX"`, `"FLOCK-XXXXXX"`, `"penguin"`, `"pigvision"`, `"fs ext battery"`, `"flck"`
+- `"flck"` covers the **truncated** spelling `test_flck` — the development Wi-Fi
+  credential string Flock shipped in production Falcon/Sparrow firmware
+  (**CVE-2025-59409**). It contains no `"flock"` substring (f-l-c-k vs f-l-o-c-k),
+  so it needs its own keyword or such a camera is invisible to the SSID path.
 - `"Flock Camera net."` cameras use **locally-administered MACs** (OUI matching won't work)
 - `ALERT_LAA_SSID` type detects these — SSID is the sole WiFi handle
 - Sequential-MAC heuristic: `:DE`/`:DF` last-byte pair on adjacent channels → +10 pts
@@ -181,9 +194,28 @@ This firmware uses **five research-proven techniques** with a confidence score (
 ### 4. BLE Detection + Cross-Correlation (`ENABLE_BLE_SCAN=1`)
 - Passive NimBLE scan for Flock BLE advertisements
 - Checks: mfr-ID `0x09C8` (XUNTONG/Flock), Raven service UUIDs (GainSec) **plus the whole Raven `0x3100`–`0x3500` service range**, device names, the **Flock accessory GATT service** (`e8ccbb38-…`) and the **Nordic legacy DFU service** — plus name *shapes* a keyword list can't express: `Penguin-NNNNNNNNNN`, a bare 10-digit serial, `DfuTarg`
+- **Standard Bluetooth SIG services never alert on their own.** `0x180A`
+  (Device Information), `0x1809` (Health Thermometer) and `0x1819` (Location and
+  Navigation) appear in GainSec's Raven write-up, but they are advertised by
+  essentially every BLE device ever made — a fitness band used to chirp as a
+  "Raven camera" at 45 points. They are now firmware-estimation evidence only,
+  and `fyService16IsStandardSvc()` blocks them even if re-added to the table.
 - Advertised device names are reported as `device_name` in the JSON/logs
 - **BLE_COEX_MODE=1** (default for all `-ble` environments): ESP-IDF SW coexistence scheduler
   runs WiFi promiscuous + BLE simultaneously — no promiscuous pause needed
+  - *Trade-off on the `BLE_COEX_MODE=0` (time-multiplexed) path:* WiFi promiscuous mode
+    is paused entirely for `BLE_SCAN_DWELL_MS` (5 s) of every `BLE_SCAN_INTERVAL_MS`
+    (60 s) — **~8 % of WiFi airtime is blind**, and a camera seen only during that window
+    is missed outright. The coex path removes the blackout but still misses roughly
+    10–20 % of frames during BLE TX/RX windows. Neither is a bug; both are a single-radio
+    trade-off, and it is why the `-ble` environments default to coexistence.
+- **2.4 GHz only, on every board except the ESP32-C5.** The ESP32, ESP32-S3 and all
+  M5Atom variants have 2.4 GHz-only radios: `esp_wifi_set_channel(157, …)` returns
+  `ESP_ERR_INVALID_ARG` and does nothing. Issue-#43 "Flock Camera net." cameras transmit
+  **simultaneously on 2.4 GHz ch.1 and 5 GHz ch.157**, so a 2.4-only build observes only
+  half of that camera's radios. That is a hardware limit rather than a firmware gap — the
+  `lilygo-t-dongle-c5` environment (`-DESP32C5_DUALBAND=1`, experimental) is the dual-band
+  answer. See the channel notes near the top of `main.cpp`.
 - BLE hit within 60 s of WiFi hit → +20 confidence bonus
 
 ### 5. Multi-Address Matching
@@ -201,14 +233,14 @@ the dashboard/CSV export). The full set:
 | `oui_addr2` | `wifi` | `addr2` matches a high-confidence Flock OUI | 40 |
 | `fw_default_mac` | `wifi` | `addr2` is an exact **factory-default** camera radio MAC (`00:03:7f:50:00:01` / `…:4f:00:16`) — an unprovisioned unit | 55 |
 | `oui_addr1` / `oui_addr3` | `wifi` | OUI in the receiver (`addr1`) / BSSID (`addr3`) — AP-echo paths, deliberately quieter | 18 / 12 |
-| `wildcard_probe` | `wifi` | High/mfr-tier OUI **+** empty-SSID probe request | 62 (`oui_addr2`+`wildcard_probe`) / 20 mfr |
+| `wildcard_probe` | `wifi` | High/mfr-tier OUI **+** empty-SSID probe request. **+18** when the probe's IEs also match the drive-tested LiteOn/USI fingerprint (62 → 80) | 62 (`oui_addr2`+`wildcard_probe`) / 20 mfr |
 | `ssid` | `wifi` | SSID keyword hit from a globally-administered MAC | 32, or 45 for exact `Flock Camera net.` |
 | `laa_ssid` | `wifi` | SSID keyword hit from a **locally-administered** MAC (issue-#43 cameras) | +12 over `ssid` |
 | `oui_mfr` | `wifi` | Contract-manufacturer OUI (Liteon/USI, **`00:03:7f`** Qualcomm Atheros) — silent alone | 20 |
 | `soundthinking` | `wifi` | SoundThinking/ShotSpotter acoustic-sensor OUI | 35 |
 | `ble_mfr_id` | `ble` | BLE manufacturer data company ID `0x09C8` (XUNTONG/Flock) | 45 |
 | `ble_name` | `ble` | Device name keyword **or** shape match (`Penguin-NNNNNNNNNN`, bare 10-digit serial, `FS Ext Battery`, `DfuTarg`, …) | 35 |
-| `ble_raven_uuid` | `ble` | Raven service UUID — the named table **or** anywhere in `0x3100`–`0x3500` (the range covers `0x3101`/`0x3102`, which leak GPS) | 45 |
+| `ble_raven_uuid` | `ble` | Raven service UUID — the named table **or** anywhere in `0x3100`–`0x3500` (the range covers `0x3101`/`0x3102`, which leak GPS). Standard SIG services (`0x180A`/`0x1809`/`0x1819`) are excluded | 45 |
 | `ble_flock_gatt` | `ble` | Flock accessory service `e8ccbb38-…` or Nordic legacy DFU service | 45 |
 
 Notes for dashboard consumers:
@@ -232,15 +264,17 @@ Unity test suite — no ESP32 hardware needed:
 
 ```bash
 cd flock-you-esp32
-pio test -e native                         # run all 62 tests
+pio test -e native                         # run all 79 tests
 pio test -e native -f test_ble_matching    # MAC / BLE name / GATT / mfr-ID tests (41)
 pio test -e native -f test_uuid_matching   # Raven UUID + range / parsing / fw version (21)
+pio test -e native -f test_wifi_patterns   # OUI tiers / SSID keywords / IE fingerprint (17)
 ```
 
-All **62 tests pass** against the current `fy_detect.h` / `fy_confidence.h`.  The
+All **79 tests pass** against the current `fy_detect.h` / `fy_confidence.h`.  The
 test suite covers:
 - All 33 high-confidence Flock OUI prefixes (case-insensitive)
-- All 7 contract-manufacturer OUIs (Liteon/USI + Qualcomm Atheros `00:03:7f`)
+- All 8 contract-manufacturer OUIs (Liteon/USI + Qualcomm Atheros `00:03:7f`),
+  including that `14:b5:cd` sits in the mfr tier and **not** in HIGH
 - SoundThinking OUI isolation (not in high or mfr lists)
 - **Firmware-default radio MACs match on all six bytes** — near-misses in the
   same `00:03:7f` block (`…:50:00:02`) must *not* match (firmware-derived set)
@@ -248,7 +282,9 @@ test suite covers:
 - BLE name **shape** matching: bare 10-digit serial, `Penguin-` + 10 digits,
   `FS Ext Battery`, `DfuTarg`, plus rejection of wrong digit counts / trailing junk
 - BLE mfr-ID `0x09C8` match + rejection of the old incorrect `0x05A7`
-- All 8 named Raven 128-bit GATT service UUIDs (case-insensitive)
+- All 5 named Raven **vendor** 128-bit GATT service UUIDs (case-insensitive) —
+  the three standard SIG assignments that used to be listed (`0x180A`/`0x1809`/
+  `0x1819`) are covered by a negative test instead, because they must never alert
 - Raven service **range** `0x3100`–`0x3500`, including `0x3101`/`0x3102` (the
   GPS-leaking services the named table alone missed) and out-of-range rejection
 - 16-bit service parsing from both UUID shapes (canonical 128-bit and `0x3101`)

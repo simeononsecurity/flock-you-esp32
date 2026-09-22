@@ -100,6 +100,13 @@ tooling (`api/*.py`) in this repository.
   `fy_ble_names[]`) instead of re-hardcoding them. When a signature needs a
   *shape* rule rather than a substring, add it to the shared header so the host
   unit tests (`pio test -e native`) can cover it.
+  The same consolidation has since been applied to the other two tables that
+  had drifted or were about to: the **SSID keyword list** (was a private
+  `target_ssid_keywords[]` copy inside `main.cpp`, now `fy_ssid_keywords[]` +
+  `fyCheckFlockSsidKeyword()`) and the **BLE manufacturer company ID** (was the
+  literal `0x09C8` compared inline in two places, now `fy_ble_mfr_ids[]` +
+  `fyCheckBLEMfrID()`). Rule of thumb: if a value decides whether a detection
+  fires, it belongs in `fy_detect.h`, and `main.cpp` should only call a matcher.
 
 ## Python (`api/`)
 

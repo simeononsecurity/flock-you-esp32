@@ -171,3 +171,20 @@ before considering any firmware change complete.
   exists because `.page` uses `overflow: hidden`, so over-long text is
   clipped in the PDF with no error anywhere — exactly the kind of silent
   failure this project has been bitten by before.
+- **`lilygo-t-dongle-c5` fails its FIRST build after a fresh platform install,
+  then succeeds on retry. Not a code error — do not chase it.** The two C5
+  environments use the `pioarduino/platform-espressif32` fork, and when that
+  platform's framework package is being installed in the same invocation, the
+  build script resolves `FRAMEWORK_DIR` to `None` and dies with
+  `TypeError: argument should be a str or an os.PathLike object where
+  __fspath__ returns a str, not 'NoneType'`, pointing at
+  `Path(FRAMEWORK_DIR) / "tools" / "pioarduino-build.py"`. The tell is that the
+  log above the traceback shows `Tool Manager: Installing …riscv32-esp-elf…` /
+  `…tool-esptoolpy…` — i.e. packages were being fetched during the failed run.
+  Confirmed on this repo: the very next invocation (the `-ble` sibling, same
+  platform) built fine, and re-running the failed env afterwards exited 0. So a
+  C5 "failure" in a full-matrix sweep should be **re-run once** before it is
+  reported as a build break. (Contrast with `eye-spy`, where the same-named env
+  fails *structurally*: its `espressif32@6.7.0` ships no
+  `platformio-build-esp32c5.py`, which fails in well under a second and stays
+  failed on retry.)

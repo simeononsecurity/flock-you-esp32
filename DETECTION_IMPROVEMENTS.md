@@ -115,7 +115,9 @@ registered with the IEEE.
 
 `ALERT_LAA_SSID` fires when:
 1. `addr2` has bit 1 set (locally-administered)
-2. The SSID IE matches any keyword in `target_ssid_keywords[]`
+2. The SSID IE matches any keyword in `fy_ssid_keywords[]`
+   (`fy_detect.h` — single source of truth; `matchSsidKeyword()` in `main.cpp`
+   delegates to `fyCheckFlockSsidKeyword()`)
 
 Score for `"Flock Camera net."` exact match:
 

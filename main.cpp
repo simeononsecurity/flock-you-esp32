@@ -329,20 +329,12 @@ static const size_t  fullHopChannelCount = sizeof(fullHopChannels) / sizeof(full
 #define CHECK_ADDR1 1   // dst/rx — catches Flock STAs receiving probe responses
 #define CHECK_ADDR3 1   // bssid fallback for randomised addr2  (was 0)
 
-// Full SSID keyword list.  Lower-case; matched case-insensitively.
-// "flock"          → bare deployed cameras, provisioning "Flock-XXXXXX"
-// "flock camera"   → issue-43 hotspot ("Flock Camera net.")
-// "flocksafety"    → variant brand string sometimes advertised
-// "fs ext battery" → "FS Ext Battery" battery-pack SoftAP (firmware dump,
-//                    2026-09-16 — the same label the pack advertises over BLE)
-static const char* target_ssid_keywords[] = {
-  "flock",          // matches "Flock", "Flock-XXXXXX", "FLOCK-XXXXXX", "Flock Camera net."
-  "flocksafety",
-  "penguin",        // internal Flock product codename
-  "pigvision",      // PigVision / Raven variant
-  "fs ext battery"  // FS Ext Battery pack SoftAP (firmware-derived, 2026-09-16)
-};
-static const size_t SSID_KEYWORD_COUNT = sizeof(target_ssid_keywords) / sizeof(target_ssid_keywords[0]);
+// SSID keyword list lives in fy_detect.h (fy_ssid_keywords[] /
+// fyCheckFlockSsidKeyword()) as the single source of truth, so the native test
+// build can cover it. main.cpp used to keep a duplicate copy here — the same
+// pattern that let the BLE *name* list drift before it was consolidated the
+// same way. This alias keeps the existing startup-log field name working.
+static const size_t SSID_KEYWORD_COUNT = FY_SSID_KEYWORD_COUNT;
 
 // Exact SSID strings for higher-confidence matching — scored separately.
 // "Flock Camera net." is the issue-#43 pattern and gets a bigger boost
@@ -434,6 +426,7 @@ typedef struct {
   volatile uint32_t candAddr2;             // OUI hit on addr2 (any tier)
   volatile uint32_t candFwMac;             // exact firmware-default MAC in addr2
   volatile uint32_t candWildcard;          // wildcard probe request
+  volatile uint32_t candIeSig;             // IE signature matched (bonus applied)
   volatile uint32_t candAddr1;             // OUI hit on addr1
   volatile uint32_t candAddr3;             // OUI hit on addr3
   volatile uint32_t candSsid;              // SSID keyword hit, GA MAC
@@ -610,9 +603,14 @@ static void IRAM_ATTR enqueueAlert(AlertType type, const uint8_t* mac, int8_t rs
 
 #define BLE_SCAN_INTERVAL_MS   60000UL  // how often to run a BLE scan
 #define BLE_SCAN_DWELL_MS       5000UL  // how long the BLE scan runs
-// PR#39 correction: 0x09C8 is the XUNTONG BT company ID per wgreenberg/flock-you.
-// Pre-PR#39 firmware used 0x05A7 (incorrect — that ID belongs to Assa Abloy).
-#define BLE_FLOCK_MFR_ID       0x09C8   // XUNTONG Technology Co., Ltd
+// BLE manufacturer company ID(s) live in fy_detect.h (fy_ble_mfr_ids[] /
+// fyCheckBLEMfrID()) as the single source of truth. main.cpp used to hardcode
+// 0x09C8 here and compare against the literal directly, which is the same
+// duplication the BLE *name* list was consolidated to stop — adding a second
+// Flock company ID to the shared table would silently not have taken effect.
+// PR#39 correction: 0x09C8 is the XUNTONG BT company ID per
+// wgreenberg/flock-you; pre-PR#39 firmware used 0x05A7 (incorrect — that ID
+// belongs to Assa Abloy).
 
 // Standalone BLE-only confidence tiers (fix: these previously never fired —
 // a BLE-only match only recorded a timestamp for later WiFi correlation and
@@ -677,7 +675,7 @@ static void fyProcessBLEAdvertisedDevice(NimBLEAdvertisedDevice* adv) {
       const uint8_t* m = (const uint8_t*)mfr.data();
       // BLE mfr data is LE: low byte first
       uint16_t mfrId = (uint16_t)m[0] | ((uint16_t)m[1] << 8);
-      if (mfrId == BLE_FLOCK_MFR_ID) {
+      if (fyCheckBLEMfrID(mfrId)) {
         matched       = true;
         bleAlertType  = ALERT_BLE_MFR_ID;
         bleConfidence = CS_BLE_MFR_ID_STANDALONE;
@@ -1210,9 +1208,9 @@ static char* strcasestr_local(const char* haystack, const char* needle) {
 }
 
 static bool matchSsidKeyword(const char* ssid) {
-  for (size_t i = 0; i < SSID_KEYWORD_COUNT; i++)
-    if (strcasestr_local(ssid, target_ssid_keywords[i])) return true;
-  return false;
+  // Single source of truth: the keyword table and the case-insensitive
+  // substring search both live in fy_detect.h (fyCheckFlockSsidKeyword()).
+  return fyCheckFlockSsidKeyword(ssid);
 }
 
 // Returns true if ssid is the exact "Flock Camera net." string (case-sensitive
@@ -1347,11 +1345,13 @@ static void printSniffStats() {
 
   // GATE + QUEUE line — how far frames got through matching, and whether any
   // matched alert was lost between matching and logging.
-  dualPrintf("[flockyou] stats gate a2=%lu fwmac=%lu wild=%lu a1=%lu a3=%lu"
-             " ssid=%lu laa=%lu seqpair=%lu | queue ok=%lu drop=%lu drained=%lu\n",
+  dualPrintf("[flockyou] stats gate a2=%lu fwmac=%lu wild=%lu iesig=%lu a1=%lu"
+             " a3=%lu ssid=%lu laa=%lu seqpair=%lu"
+             " | queue ok=%lu drop=%lu drained=%lu\n",
              (unsigned long)fyStats.candAddr2,
              (unsigned long)fyStats.candFwMac,
              (unsigned long)fyStats.candWildcard,
+             (unsigned long)fyStats.candIeSig,
              (unsigned long)fyStats.candAddr1,
              (unsigned long)fyStats.candAddr3,
              (unsigned long)fyStats.candSsid,
@@ -1904,6 +1904,18 @@ static void IRAM_ATTR wifiSniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
           if (r == -1 && bodyLen > 4) r = isWildcardProbeIE(body, bodyLen - 4);
           if (r == 1) {
             uint8_t conf = computeConfidence(ALERT_WILDCARD_PROBE, hdr->addr2, rssi, nullptr);
+            // IE-fingerprint bonus — ADDITIVE only. Matching the drive-tested
+            // LiteOn/USI fingerprint raises confidence; NOT matching it still
+            // enqueues the alert at its normal score, so a camera running
+            // firmware we have not fingerprinted stays detectable. This is
+            // deliberately unlike upstream, which replaced its wildcard-probe
+            // gate with the signature (see fy_detect.h's IE section).
+            if (fyCheckFlockIeSignature(body, bodyLen)) {
+              conf = applyIeSigBonus(conf);
+#if FY_SNIFF_STATS
+              FY_STAT_BUMP(fyStats.candIeSig);
+#endif
+            }
             uint8_t pairCh = 0;
             if (checkSeqMac(hdr->addr2, ch, &pairCh)) {
               conf = applySeqMacBonus(conf);

@@ -7,11 +7,59 @@
 
 // ── Raven UUID matching tests ─────────────────────────────────────────────────
 
-void test_raven_uuid_known_device_info(void) {
-    const char* uuids[] = { FY_RAVEN_DEVICE_INFO };
+void test_raven_uuid_known_vendor_service(void) {
+    const char* uuids[] = { FY_RAVEN_GPS };
     char out[41] = {0};
     TEST_ASSERT_TRUE(fyCheckRavenUUIDFromStrings(uuids, 1, out));
-    TEST_ASSERT_EQUAL_STRING(FY_RAVEN_DEVICE_INFO, out);
+    TEST_ASSERT_EQUAL_STRING(FY_RAVEN_GPS, out);
+}
+
+// BEHAVIOUR CHANGE (deliberate): 0x180A / 0x1809 / 0x1819 are *standard
+// Bluetooth SIG* services, present on essentially every BLE device ever made
+// (phones, watches, earbuds, fitness bands). They used to sit in
+// fy_raven_uuids[], scoring CS_BLE_UUID_STANDALONE=45 (> chirp threshold), so
+// any passing fitness tracker alerted as a "Raven camera". They must no longer
+// match standalone. This test previously asserted the 0x180A match positively.
+void test_raven_uuid_standard_services_never_alert(void) {
+    const char* std_uuids[] = {
+        "0000180a-0000-1000-8000-00805f9b34fb",  // Device Information
+        "00001809-0000-1000-8000-00805f9b34fb",  // Health Thermometer
+        "00001819-0000-1000-8000-00805f9b34fb",  // Location and Navigation
+    };
+    for (size_t i = 0; i < 3; i++) {
+        const char* one[] = { std_uuids[i] };
+        TEST_ASSERT_FALSE_MESSAGE(
+            fyCheckRavenUUIDFromStrings(one, 1, nullptr), std_uuids[i]);
+    }
+}
+
+void test_standard_service_classifier(void) {
+    TEST_ASSERT_TRUE(fyService16IsStandardSvc(0x1800));   // Generic Access
+    TEST_ASSERT_TRUE(fyService16IsStandardSvc(0x1809));
+    TEST_ASSERT_TRUE(fyService16IsStandardSvc(0x180A));
+    TEST_ASSERT_TRUE(fyService16IsStandardSvc(0x1819));
+    // Raven's vendor range is not a SIG assignment.
+    TEST_ASSERT_FALSE(fyService16IsStandardSvc(0x3100));
+    TEST_ASSERT_FALSE(fyService16IsStandardSvc(0x3101));
+    TEST_ASSERT_FALSE(fyService16IsStandardSvc(0x3500));
+}
+
+// Regression guard: no entry in the Raven alert table may be a standard
+// service, so re-adding one fails here rather than on a user's wrist.
+void test_raven_table_has_no_standard_services(void) {
+    for (size_t i = 0; i < FY_RAVEN_UUID_COUNT; i++) {
+        int svc = fyService16FromUuidString(fy_raven_uuids[i]);
+        TEST_ASSERT_FALSE_MESSAGE(
+            svc >= 0 && fyService16IsStandardSvc((uint16_t)svc),
+            fy_raven_uuids[i]);
+    }
+}
+
+void test_raven_uuid_case_insensitive(void) {
+    // Upper-case form of a *vendor* service must still match (this test used to
+    // use 0x180A, which now correctly does not alert).
+    const char* uuids[] = { "00003100-0000-1000-8000-00805F9B34FB" };
+    TEST_ASSERT_TRUE(fyCheckRavenUUIDFromStrings(uuids, 1, nullptr));
 }
 
 void test_raven_uuid_all_known(void) {
@@ -21,11 +69,6 @@ void test_raven_uuid_all_known(void) {
             fyCheckRavenUUIDFromStrings(uuids, 1, nullptr),
             fy_raven_uuids[i]);
     }
-}
-
-void test_raven_uuid_case_insensitive(void) {
-    const char* uuids[] = { "0000180A-0000-1000-8000-00805F9B34FB" };
-    TEST_ASSERT_TRUE(fyCheckRavenUUIDFromStrings(uuids, 1, nullptr));
 }
 
 void test_raven_uuid_no_match(void) {
@@ -147,8 +190,13 @@ void test_fw_only_old_health(void) {
 // ── UUID count sanity ─────────────────────────────────────────────────────────
 
 void test_raven_uuid_count(void) {
-    // Must have exactly 8 known Raven service UUIDs
-    TEST_ASSERT_EQUAL(8u, (unsigned)FY_RAVEN_UUID_COUNT);
+    // 5 VENDOR-SPECIFIC services may alert standalone. The 3 legacy
+    // standard-SIG assignments (0x180A / 0x1809 / 0x1819) moved to
+    // fy_raven_legacy_uuids[] as estimation-only evidence, so they are
+    // deliberately not counted here — see the standard-services block above
+    // fy_raven_uuids[] for why.
+    TEST_ASSERT_EQUAL(5u, (unsigned)FY_RAVEN_UUID_COUNT);
+    TEST_ASSERT_EQUAL(3u, (unsigned)FY_RAVEN_LEGACY_UUID_COUNT);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -156,7 +204,10 @@ void test_raven_uuid_count(void) {
 int main(void) {
     UNITY_BEGIN();
 
-    RUN_TEST(test_raven_uuid_known_device_info);
+    RUN_TEST(test_raven_uuid_known_vendor_service);
+    RUN_TEST(test_raven_uuid_standard_services_never_alert);
+    RUN_TEST(test_standard_service_classifier);
+    RUN_TEST(test_raven_table_has_no_standard_services);
     RUN_TEST(test_raven_uuid_all_known);
     RUN_TEST(test_raven_uuid_case_insensitive);
     RUN_TEST(test_raven_uuid_no_match);

@@ -43,7 +43,8 @@ appear in `addr2` even with no AP association.
 |---|---|---|
 | `Flock-XXXXXX` | SoftAP broadcast by the camera | `WifiApService.java`: literal `"Flock-"` + last 6 chars of the WiFi MAC; WPA2 password `security`. Covered by our existing `flock` keyword. |
 | `Flock` | Bare advertising SSID on provisioned units | Same service |
-| `FS Ext Battery` | FS Ext Battery pack SoftAP | Added to `target_ssid_keywords[]` from this dump |
+| `FS Ext Battery` | FS Ext Battery pack SoftAP | Added to `fy_ssid_keywords[]` from this dump |
+| `test_flck` | Development Wi-Fi credential string shipped in production Falcon/Sparrow firmware (**CVE-2025-59409**). Matching keyword is the truncated `flck`, because `test_flck` does not contain `flock` (f-l-c-k vs f-l-o-c-k). | Added to `fy_ssid_keywords[]` |
 
 ---
 

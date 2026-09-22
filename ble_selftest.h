@@ -131,7 +131,10 @@ static void bleSelfTestFire(NimBLEAdvertising* adv, uint8_t scenario) {
 
   switch (scenario) {
     case 0: {
-      uint16_t id = BLE_FLOCK_MFR_ID;
+      // Derive from fy_detect.h's shared table rather than hardcoding a second
+      // copy of the company ID (main.cpp previously exposed BLE_FLOCK_MFR_ID
+      // for this, which is the drift this consolidation removes).
+      uint16_t id = fy_ble_mfr_ids[0];
       uint8_t mfr[3] = { (uint8_t)(id & 0xFF), (uint8_t)(id >> 8), 0x00 };
       data.setManufacturerData(std::string((char*)mfr, sizeof(mfr)));
       label = "mfr-ID";

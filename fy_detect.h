@@ -69,6 +69,15 @@ static const char* fy_oui_high[] = {
 static const char* fy_oui_mfr[] = {
   "f4:6a:dd",   // Liteon Technology
   "f8:a2:d6",   // Liteon Technology
+  // 14:b5:cd is Liteon too (per the IEEE lookup in oui.txt), so it belongs in
+  // THIS table rather than fy_oui_high[]: Liteon hardware is shared with
+  // unrelated consumer products, which is exactly why f4:6a:dd / f8:a2:d6 sit
+  // here. Upstream's flat single-list model has no tier to choose, so copying
+  // its classification would place a shared contract-manufacturer chipset
+  // prefix at high confidence — the f8:a2:d6 false-positive class that this
+  // split exists to prevent. It was missing from both tables entirely before
+  // this (the community dataset has 32 prefixes; we carried 31).
+  "14:b5:cd",   // Liteon Technology (community dataset sync)
   "00:f4:8d",   // Universal Scientific Industrial (USI)
   "d0:39:57",   // USI
   "e8:d0:fc",   // USI
@@ -124,6 +133,73 @@ static const char* fy_oui_soundthinking[] = {
   "d4:11:d6"
 };
 #define FY_OUI_ST_COUNT (sizeof(fy_oui_soundthinking)/sizeof(fy_oui_soundthinking[0]))
+
+// ============================================================================
+// WIFI SSID KEYWORD PATTERNS  (case-insensitive substring match)
+// ============================================================================
+// SINGLE SOURCE OF TRUTH: main.cpp deliberately does NOT keep its own copy of
+// this list any more (it used to, which is how it drifted — the same problem
+// the BLE name list below has a warning about).
+//
+//   "flock"          → bare deployed cameras + provisioning "Flock-XXXXXX"
+//                      SoftAP, and (as a substring) "Flock Camera net."
+//   "flocksafety"    → variant brand string sometimes advertised
+//   "penguin"        → Flock's internal Penguin product codename (battery pack)
+//   "pigvision"      → PigVision / Raven variant
+//   "fs ext battery" → "FS Ext Battery" pack SoftAP (firmware dump, 2026-09-16)
+//   "flck"           → CVE-2025-59409: Flock's Falcon/Sparrow LPR firmware
+//                      (OPM1.171019.026) ships *development* Wi-Fi credentials
+//                      ("test_flck") in cleartext in production firmware
+//                      (GainSec; GHSA-7m7v-cj32-7j8q). "test_flck" does NOT
+//                      match the "flock" keyword above — f-l-c-k vs f-l-o-c-k —
+//                      so the truncated form needs its own entry or a camera
+//                      advertising it is invisible. Only 4 chars, but "flck"
+//                      is not a substring of any ordinary English word or
+//                      common SSID, so it stays specific in practice.
+
+static const char* fy_ssid_keywords[] = {
+  "flock",
+  "flocksafety",
+  "penguin",
+  "pigvision",
+  "fs ext battery",
+  "flck",
+  nullptr
+};
+// Keyword count excluding the nullptr terminator (for the startup log).
+#define FY_SSID_KEYWORD_COUNT \
+  (sizeof(fy_ssid_keywords)/sizeof(fy_ssid_keywords[0]) - 1)
+
+// Locale-independent ASCII lowercase. Deliberately not tolower(): that is
+// locale-sensitive and this header is compiled for both the host test build and
+// the ESP32 target.
+static inline char fyLowerAscii(char c) {
+  return (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
+}
+
+// Case-insensitive substring search. Self-contained rather than POSIX
+// strcasestr()/strstr(), matching how main.cpp's own strcasestr_local() behaves
+// — this header must not depend on a GNU extension being available.
+static inline bool fySubstrCI(const char* hay, const char* needle) {
+  if (!hay || !needle || !needle[0]) return false;
+  for (const char* h = hay; *h; ++h) {
+    const char* hp = h;
+    const char* np = needle;
+    while (*hp && *np && fyLowerAscii(*hp) == fyLowerAscii(*np)) { ++hp; ++np; }
+    if (!*np) return true;
+  }
+  return false;
+}
+
+// True when an SSID contains any Flock keyword. Single entry point for the
+// firmware, the beacon tester and the native tests.
+static inline bool fyCheckFlockSsidKeyword(const char* ssid) {
+  if (!ssid || !ssid[0]) return false;
+  for (size_t i = 0; fy_ssid_keywords[i]; i++) {
+    if (fySubstrCI(ssid, fy_ssid_keywords[i])) return true;
+  }
+  return false;
+}
 
 // ============================================================================
 // BLE DEVICE NAME PATTERNS  (case-insensitive substring match)
@@ -201,26 +277,78 @@ static const uint16_t fy_ble_mfr_ids[] = {
 // Raven is a combined ALPR + gunshot-detection platform sometimes co-deployed
 // with Flock cameras.  These GATT service UUIDs were identified by GainSec.
 
-#define FY_RAVEN_DEVICE_INFO  "0000180a-0000-1000-8000-00805f9b34fb"
+// ── Standard Bluetooth SIG services: NEVER standalone alert evidence ─────────
+// 0x180A (Device Information), 0x1809 (Health Thermometer) and 0x1819 (Location
+// and Navigation) are *adopted Bluetooth SIG services*, advertised by an
+// enormous share of ordinary BLE hardware — phones, watches, earbuds, fitness
+// bands, laptops, headsets. 0x180A in particular is present on essentially
+// every BLE peripheral ever built.
+//
+// They appear in GainSec's Raven write-up because Raven firmware 1.1.x
+// advertises 0x1809/0x1819 as stand-ins for its own health/location services
+// and lists 0x180A alongside the vendor services. They were originally copied
+// straight into fy_raven_uuids[] — which made a passing fitness tracker chirp
+// and flash as a "Raven camera", because ALERT_BLE_RAVEN_UUID scores
+// CS_BLE_UUID_STANDALONE (45), far above CHIRP_MIN_CONFIDENCE (30).
+//
+// They are therefore kept ONLY as firmware-version evidence (see
+// fyEstimateRavenFW() at the bottom of this header) and are never matched on
+// their own. fyCheckRavenUUIDFromStrings() additionally consults
+// fyService16IsStandardSvc() so a standard service cannot alert even if one is
+// re-added to the table by a future edit.
+static const uint16_t fy_ble_standard_svcs[] = {
+  0x1800, 0x1801, 0x1804, 0x1805, 0x1808, 0x1809, 0x180A, 0x180D, 0x180F,
+  0x1810, 0x1811, 0x1812, 0x1813, 0x1814, 0x1815, 0x1816, 0x1818, 0x1819,
+  0x181A, 0x181C, 0x181D, 0x181E, 0x181F, 0x1820, 0x1821, 0x1822, 0x1823,
+  0x1826, 0x183A
+};
+#define FY_BLE_STANDARD_SVC_COUNT \
+  (sizeof(fy_ble_standard_svcs)/sizeof(fy_ble_standard_svcs[0]))
+
+// True when a 16-bit UUID is an adopted Bluetooth SIG service (i.e. evidence of
+// "a BLE device", not of any particular vendor). None of the Raven 0x3100-0x3500
+// vendor range is a SIG assignment today, so this is a guard rather than a
+// filter for the range path — its real job is to stop a standard service from
+// ever alerting via the named table.
+static inline bool fyService16IsStandardSvc(uint16_t v) {
+  for (size_t i = 0; i < FY_BLE_STANDARD_SVC_COUNT; i++) {
+    if (fy_ble_standard_svcs[i] == v) return true;
+  }
+  return false;
+}
+
+// Legacy 16-bit assignments retained for Raven firmware-version estimation only.
+#define FY_RAVEN_LEGACY_DEVINFO  "0000180a-0000-1000-8000-00805f9b34fb"
+#define FY_RAVEN_LEGACY_HEALTH   "00001809-0000-1000-8000-00805f9b34fb"
+#define FY_RAVEN_LEGACY_LOCATION "00001819-0000-1000-8000-00805f9b34fb"
+
+// Raven VENDOR-SPECIFIC services. Only these may raise a standalone alert:
+// 0x3100-0x3500 are not SIG assignments, so a match genuinely indicates this
+// product family rather than "some BLE device".
 #define FY_RAVEN_GPS          "00003100-0000-1000-8000-00805f9b34fb"
 #define FY_RAVEN_POWER        "00003200-0000-1000-8000-00805f9b34fb"
 #define FY_RAVEN_NETWORK      "00003300-0000-1000-8000-00805f9b34fb"
 #define FY_RAVEN_UPLOAD       "00003400-0000-1000-8000-00805f9b34fb"
 #define FY_RAVEN_ERROR        "00003500-0000-1000-8000-00805f9b34fb"
-#define FY_RAVEN_OLD_HEALTH   "00001809-0000-1000-8000-00805f9b34fb"
-#define FY_RAVEN_OLD_LOCATION "00001819-0000-1000-8000-00805f9b34fb"
 
 static const char* fy_raven_uuids[] = {
-  FY_RAVEN_DEVICE_INFO,
   FY_RAVEN_GPS,
   FY_RAVEN_POWER,
   FY_RAVEN_NETWORK,
   FY_RAVEN_UPLOAD,
-  FY_RAVEN_ERROR,
-  FY_RAVEN_OLD_HEALTH,
-  FY_RAVEN_OLD_LOCATION
+  FY_RAVEN_ERROR
 };
 #define FY_RAVEN_UUID_COUNT (sizeof(fy_raven_uuids)/sizeof(fy_raven_uuids[0]))
+
+// Legacy set — deliberately NOT part of fy_raven_uuids[]. Consulted only by
+// firmware-version estimation, never by the alerting path.
+static const char* fy_raven_legacy_uuids[] = {
+  FY_RAVEN_LEGACY_DEVINFO,
+  FY_RAVEN_LEGACY_HEALTH,
+  FY_RAVEN_LEGACY_LOCATION
+};
+#define FY_RAVEN_LEGACY_UUID_COUNT \
+  (sizeof(fy_raven_legacy_uuids)/sizeof(fy_raven_legacy_uuids[0]))
 
 // ----------------------------------------------------------------------------
 // RAVEN SERVICE *RANGE*  (0x3100-0x3500)
@@ -409,6 +537,11 @@ static inline bool fyCheckRavenUUIDFromStrings(const char** uuids, int count,
   if (!uuids || count <= 0) return false;
   for (int i = 0; i < count; i++) {
     if (!uuids[i]) continue;
+    // Standard SIG services are not vendor evidence — skip them outright so a
+    // re-added 0x180A/0x1809/0x1819 can never alert again (see the block above
+    // fy_raven_uuids[]; this was a real false-positive source).
+    int svc = fyService16FromUuidString(uuids[i]);
+    if (svc >= 0 && fyService16IsStandardSvc((uint16_t)svc)) continue;
     for (size_t j = 0; j < FY_RAVEN_UUID_COUNT; j++) {
       if (strcasecmp(uuids[i], fy_raven_uuids[j]) == 0) {
         if (out_uuid) strncpy(out_uuid, uuids[i], 40);
@@ -417,7 +550,6 @@ static inline bool fyCheckRavenUUIDFromStrings(const char** uuids, int count,
     }
     // Not one of the named services — but any in-range 16-bit service is a
     // Raven camera advertiser (this is what catches 0x3101/0x3102).
-    int svc = fyService16FromUuidString(uuids[i]);
     if (svc >= 0 && fyCheckRavenServiceRange((uint16_t)svc)) {
       if (out_uuid) strncpy(out_uuid, uuids[i], 40);
       return true;
@@ -449,7 +581,7 @@ static inline bool fyCheckFlockGattUUIDFromStrings(const char** uuids, int count
 // ============================================================================
 // Estimate Raven firmware version from which service UUID categories are present.
 // has_new_gps  = FY_RAVEN_GPS (0x3100) was advertised
-// has_old_loc  = FY_RAVEN_OLD_LOCATION (0x1819) was advertised
+// has_old_loc  = FY_RAVEN_LEGACY_LOCATION (0x1819) was advertised
 // has_power    = FY_RAVEN_POWER (0x3200) was advertised
 
 static inline const char* fyEstimateRavenFW(bool has_new_gps,
@@ -459,6 +591,274 @@ static inline const char* fyEstimateRavenFW(bool has_new_gps,
   if (has_new_gps && !has_power)   return "1.2.x";
   if (has_new_gps && has_power)    return "1.3.x";
   return "?";
+}
+
+// ============================================================================
+// PROBE-REQUEST INFORMATION-ELEMENT FINGERPRINT  (upstream IE signature)
+// ============================================================================
+// An 802.11 Probe Request whose Information Elements match a known LiteOn/USI
+// Flock-chipset fingerprint is a much more specific signal than "a device from
+// a Flock OUI sent an empty-SSID probe". The fingerprint is built by walking
+// the raw IE TLVs in order and encoding them as a signature string:
+//   - SSID (tag 0) is skipped entirely — the *zero length* SSID is what got us
+//     here, so its contents carry no information
+//   - vendor IE (tag 221) becomes "221:" + the first 8 payload bytes as hex
+//   - every other IE becomes its decimal tag number
+// For a field-captured camera probe that yields the comma-separated signature
+// the upstream project (colonelpanichacks/flock-you) drive-tested:
+//   "2,12,127,221:506f9a16030103,45,191,221:0050f208000000"
+//
+// IMPORTANT — this is a BONUS, not a gate. Upstream REPLACED its plain
+// wildcard-probe check with this signature and justified disabling its
+// addr1/addr3 tiers on the back of it. This build deliberately does not: a
+// camera running firmware we have not fingerprinted still has to be
+// detectable, so the IE signature adds confidence on top of
+// ALERT_WILDCARD_PROBE (CS_IE_SIG_BONUS in fy_confidence.h) and never removes
+// recall. DETECTION_IMPROVEMENTS.md section 7 reaches the same conclusion.
+//
+// Robustness: ESP32 promiscuous captures of probe requests are frequently
+// truncated or skewed (driver length/FCS artifacts), which is why the walk
+// below — like upstream's — tolerates a phantom tag-64/len-128 overflow,
+// resyncs forward to the next plausible TLV header, and tries three candidate
+// spans (full body, body+2 skipping a leading empty-SSID IE, and body with the
+// trailing 4-byte FCS removed).
+#define FY_IE_TAG_SSID          0
+#define FY_IE_TAG_VENDOR        221
+#define FY_IE_SIG_MAX           128   // the allowlist entry is ~50 chars
+#define FY_IE_VENDOR_HEX_BYTES  8     // payload bytes encoded per vendor IE
+#define FY_IE_PHANTOM_SKIP_CAP  16
+#define FY_IE_RESYNC_MAX        64
+#define FY_IE_PHANTOM_SCAN      32
+
+// Canonical form of the drive-tested signature, as a one-element allowlist so a
+// second (firmware-derived) fingerprint can be ADDED later rather than
+// replacing this one — see the note above.
+static const char* fy_ie_sig_allowlist[] = {
+  "2,12,127,221:506f9a16030103,45,191,221:0050f208000000",
+  nullptr
+};
+
+// Leading tags of the canonical signature and its first vendor-IE token. Used
+// to repair a signature whose leading TLVs were lost to parse skew: if the
+// vendor anchor is present then everything ahead of it was noise, so the
+// canonical prefix can be restored. This is what makes the check work on
+// captures that begin mid-IE rather than at the true first IE.
+#define FY_IE_CANON_PREFIX  "2,12,127,"
+#define FY_IE_CANON_ANCHOR  "221:506f9a16030103"
+
+// Encode n raw bytes as lowercase hex pairs (no separator).
+static inline void fyIeHexNibbles(char* dst, const uint8_t* b, int n) {
+  static const char hd[] = "0123456789abcdef";
+  for (int i = 0; i < n; i++) {
+    dst[i * 2]     = hd[b[i] >> 4];
+    dst[i * 2 + 1] = hd[b[i] & 0x0f];
+  }
+}
+
+// Append one comma-separated fragment. False when the size cap is exceeded.
+static inline bool fyIeAppend(char* out, size_t cap, size_t* pos,
+                              const char* part) {
+  size_t plen = strlen(part);
+  if (*pos != 0) {
+    if (*pos + 1 >= cap) return false;
+    out[(*pos)++] = ',';
+  }
+  if (*pos + plen >= cap) return false;
+  memcpy(out + *pos, part, plen);
+  *pos += plen;
+  out[*pos] = '\0';
+  return true;
+}
+
+// Append a non-vendor IE as its decimal tag id (e.g. "2", "12", "127").
+static inline bool fyIeAppendTag(char* out, size_t cap, size_t* pos,
+                                 uint8_t id) {
+  char buf[8];
+  snprintf(buf, sizeof(buf), "%u", (unsigned)id);
+  return fyIeAppend(out, cap, pos, buf);
+}
+
+// Append a vendor IE as "221:" + up to FY_IE_VENDOR_HEX_BYTES payload bytes.
+static inline bool fyIeAppendVendor(char* out, size_t cap, size_t* pos,
+                                    const uint8_t* payload, int elen) {
+  char buf[4 + FY_IE_VENDOR_HEX_BYTES * 2 + 1];
+  int take = elen < FY_IE_VENDOR_HEX_BYTES ? elen : FY_IE_VENDOR_HEX_BYTES;
+  buf[0] = '2'; buf[1] = '2'; buf[2] = '1'; buf[3] = ':';
+  fyIeHexNibbles(buf + 4, payload, take);
+  buf[4 + take * 2] = '\0';
+  return fyIeAppend(out, cap, pos, buf);
+}
+
+// True when ies[pos] begins vendor IE 221 with OUI 50:6f:9a — the LiteOn/Flock
+// stack's vendor OUI. Used to recognise a genuine IE boundary inside a run of
+// bytes that failed TLV validation.
+static inline bool fyIeVendorAt(const uint8_t* ies, int len, int pos) {
+  return pos + 9 <= len && ies[pos] == FY_IE_TAG_VENDOR && ies[pos + 1] == 7
+      && ies[pos + 2] == 0x50 && ies[pos + 3] == 0x6f && ies[pos + 4] == 0x9a;
+}
+
+static inline bool fyIeVendorAhead(const uint8_t* ies, int len, int pos) {
+  int end = pos + 2 + FY_IE_PHANTOM_SCAN;
+  if (end > len - 1) end = len - 1;
+  for (int j = pos + 2; j < end; j++) {
+    if (fyIeVendorAt(ies, len, j)) return true;
+  }
+  return false;
+}
+
+// A declared IE length running past the buffer normally means a broken parse —
+// but a tag-64/len-128 header with real LiteON payload immediately ahead is a
+// known ESP32 capture artifact rather than end-of-frame. Skipping the 2 bogus
+// bytes recovers the remainder of the frame.
+static inline bool fyIeIsPhantomOverflow(const uint8_t* ies, int len,
+                                         uint8_t id, int elen, int i) {
+  if (i + 2 + elen <= len) return false;
+  if (elen > 200) return true;
+  return id == 64 && elen == 128 && fyIeVendorAhead(ies, len, i);
+}
+
+// Slide forward up to FY_IE_RESYNC_MAX bytes looking for the next plausible TLV
+// header (an id + length that fits inside the buffer).
+static inline int fyIeResync(const uint8_t* ies, int len, int start) {
+  int end = start + FY_IE_RESYNC_MAX;
+  if (end > len - 1) end = len - 1;
+  for (int j = start; j < end; j++) {
+    int elen = (int)ies[j + 1];
+    if (elen <= 200 && j + 2 + elen <= len) return j;
+  }
+  return -1;
+}
+
+// Walk IE TLVs into a signature string. Sets *complete when every byte was
+// consumed (a clean parse), which the caller uses to prefer the better of two
+// candidate parses.
+static inline bool fyIeSigFromIes(const uint8_t* ies, int len, char* out,
+                                  size_t cap, bool* complete) {
+  if (!ies || len < 2 || !out || cap < 4) return false;
+  size_t pos = 0;
+  out[0] = '\0';
+  int i = 0;
+  uint8_t phantomSkips = 0;
+  while (i + 2 <= len) {
+    uint8_t id   = ies[i];
+    int     elen = (int)ies[i + 1];
+    if (i + 2 + elen > len) {
+      if (phantomSkips < FY_IE_PHANTOM_SKIP_CAP
+          && fyIeIsPhantomOverflow(ies, len, id, elen, i)) {
+        phantomSkips++;
+        i += 2;
+        continue;
+      }
+      int j = fyIeResync(ies, len, i);
+      if (j > i) { i = j; continue; }
+      return false;
+    }
+    i += 2;
+    if (id == FY_IE_TAG_SSID) {
+      // A zero-length SSID IE is followed by other IEs, not more SSID data, so
+      // absorb any immediately-repeated empty SSID pairs before moving on.
+      if (elen == 0) {
+        while (i + 2 <= len && ies[i] == 0 && ies[i + 1] == 0) i += 2;
+      } else {
+        i += elen;
+      }
+      continue;
+    }
+    if (id == FY_IE_TAG_VENDOR && elen >= 4) {
+      if (!fyIeAppendVendor(out, cap, &pos, ies + i, elen)) return false;
+    } else {
+      if (!fyIeAppendTag(out, cap, &pos, id)) return false;
+    }
+    i += elen;
+  }
+  if (complete) *complete = (i == len);
+  return pos > 0;
+}
+
+// Prefer the cleaner of two candidate parses: a complete parse beats an
+// incomplete one, then the longer signature wins (more IEs recovered).
+static inline bool fyIePickSig(const char* a, bool aComplete,
+                               const char* b, bool bComplete,
+                               char* out, size_t cap) {
+  if (!a[0] && !b[0]) return false;
+  const char* pick = a;
+  if (a[0] && !b[0])              pick = a;
+  else if (!a[0] && b[0])         pick = b;
+  else if (aComplete != bComplete) pick = aComplete ? a : b;
+  else if (strlen(b) > strlen(a))  pick = b;
+  strncpy(out, pick, cap - 1);
+  out[cap - 1] = '\0';
+  return true;
+}
+
+// Restore the canonical leading tags when the vendor anchor survived but the
+// leading TLVs did not (see FY_IE_CANON_ANCHOR).
+static inline void fyIeCanonicalize(char* sig, size_t cap) {
+  if (!sig || cap < 16) return;
+  const size_t prefixLen = strlen(FY_IE_CANON_PREFIX);
+  if (strncmp(sig, FY_IE_CANON_PREFIX, prefixLen) == 0
+      && strstr(sig, FY_IE_CANON_ANCHOR) != nullptr) {
+    return;   // already canonical
+  }
+  const char* anchor = strstr(sig, FY_IE_CANON_ANCHOR);
+  if (!anchor) return;
+  char tmp[FY_IE_SIG_MAX];
+  int n = snprintf(tmp, sizeof(tmp), "%s%s", FY_IE_CANON_PREFIX, anchor);
+  if (n > 0 && (size_t)n < cap) memcpy(sig, tmp, (size_t)n + 1);
+}
+
+// Build the signature for a Probe Request body (its IEs start at body[0]).
+static inline bool fyIeSigFromProbeBody(const uint8_t* body, int bodyLen,
+                                        char* out, size_t cap) {
+  if (!body || bodyLen < 2 || !out || cap < 16) return false;
+  char sigA[FY_IE_SIG_MAX] = {0};
+  char sigB[FY_IE_SIG_MAX] = {0};
+  bool completeA = false, completeB = false;
+  bool okA = fyIeSigFromIes(body, bodyLen, sigA, sizeof(sigA), &completeA);
+  bool okB = false;
+  // Some captures include the leading empty-SSID IE, some begin after it.
+  if (bodyLen >= 2 && body[0] == 0 && body[1] == 0) {
+    okB = fyIeSigFromIes(body + 2, bodyLen - 2, sigB, sizeof(sigB), &completeB);
+  }
+  char merged[FY_IE_SIG_MAX] = {0};
+  if (!fyIePickSig(okA ? sigA : "", completeA, okB ? sigB : "", completeB,
+                   merged, sizeof(merged))) {
+    return false;
+  }
+  fyIeCanonicalize(merged, sizeof(merged));
+  strncpy(out, merged, cap - 1);
+  out[cap - 1] = '\0';
+  return out[0] != '\0';
+}
+
+// True when a signature equals any allowlist entry.
+static inline bool fyIeSigInAllowlist(const char* sig) {
+  if (!sig || !sig[0]) return false;
+  for (size_t i = 0; fy_ie_sig_allowlist[i]; i++) {
+    if (strcmp(sig, fy_ie_sig_allowlist[i]) == 0) return true;
+  }
+  return false;
+}
+
+// Entry point for the sniffer: does this Probe Request body carry the
+// drive-tested Flock LiteOn/USI IE fingerprint? Only called after the frame has
+// already matched a high/mfr-tier OUI *and* a zero-length SSID, so this is a
+// pure confidence refinement — a false negative costs only the bonus.
+static inline bool fyCheckFlockIeSignature(const uint8_t* body, int bodyLen) {
+  if (!body || bodyLen < 2) return false;
+  char sig[FY_IE_SIG_MAX];
+  if (fyIeSigFromProbeBody(body, bodyLen, sig, sizeof(sig))
+      && fyIeSigInAllowlist(sig)) {
+    return true;
+  }
+  // The final 4 bytes of a promiscuous capture are frequently the FCS, which is
+  // not an IE; retry without them (upstream does the same).
+  if (bodyLen > 4
+      && fyIeSigFromProbeBody(body, bodyLen - 4, sig, sizeof(sig))
+      && fyIeSigInAllowlist(sig)) {
+    return true;
+  }
+  return false;
 }
 
 #endif // FY_DETECT_H

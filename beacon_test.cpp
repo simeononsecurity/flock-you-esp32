@@ -21,7 +21,7 @@
 //   1. Flash this to a SEPARATE M5Atom Lite:
 //        pio run -e m5atom-lite-beacon -t upload
 //   2. Power it on near your real detector (running the normal firmware).
-//   3. It cycles through 15 scenarios (one per detection path) automatically
+//   3. It cycles through 17 scenarios (one per detection path) automatically
 //      every SCENARIO_INTERVAL_MS, in a shuffled order that guarantees full
 //      coverage every pass. Press the button (GPIO39) to force-fire the
 //      next scenario immediately instead of waiting.
@@ -53,6 +53,11 @@
 //                               fyCheckBleNamePattern() shape match that the
 //                               substring keyword list (scenario 11) cannot
 //                               express
+//   15 IE-signature bonus      — wildcard probe whose IEs match the drive-tested
+//                               LiteOn/USI fingerprint: same method as
+//                               scenario 1 but conf 62+18=80 instead of 62
+//   16 "test_flck" SSID        — CVE-2025-59409 development credential string;
+//                               only matches via the dedicated "flck" keyword
 //
 // WiFi scenarios sweep channels {1,6,11} (several bursts each) so they
 // reliably overlap the real detector's 250 ms-dwell hop cycle regardless of
@@ -101,7 +106,7 @@ static const uint8_t sweepChannels[SWEEP_CHANNELS_COUNT] = {1, 6, 11};
 #define BURST_GAP_MS           8        // gap between individual frame sends
 
 
-#define NUM_SCENARIOS 15
+#define NUM_SCENARIOS 17
 
 static const uint8_t BROADCAST_MAC[6] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
 static const uint8_t GA_DUMMY_MAC[6]  = {0x00,0x11,0x22,0xAA,0xBB,0xCC}; // GA, no OUI table match
@@ -449,6 +454,63 @@ static void scenario14_BleSerialName() {
   Serial.printf("[beacon] 14 BLE_SERIAL_NAME      name=\"%s\" (bare 10-digit)\n", name);
 }
 
+// Probe Request carrying the exact IE chain that main.cpp's
+// fyCheckFlockIeSignature() allowlist expects: zero-length SSID, tags
+// 2/12/127, the LiteON vendor IE (OUI 50:6f:9a), tags 45/191, then a second
+// vendor IE. Built with bfAppendIE() rather than a second hardcoded copy of
+// the byte sequence so the builder stays readable next to the pattern it mirrors.
+static size_t bfBuildIeSigProbe(uint8_t* buf, const uint8_t* addr2) {
+  static const uint8_t tag2[]   = { 0xAA };
+  static const uint8_t tag12[]  = { 0xBB };
+  static const uint8_t tag127[] = { 0xCC };
+  static const uint8_t tag45[]  = { 0xEE };
+  static const uint8_t tag191[] = { 0xFF };
+  // Vendor IE 221, payload = LiteON OUI (50:6f:9a) + captured bytes.
+  static const uint8_t vend1[]  = { 0x50,0x6f,0x9a,0x16,0x03,0x01,0x03 };
+  static const uint8_t vend2[]  = { 0x00,0x50,0xf2,0x08,0x00,0x00,0x00 };
+
+  size_t off = bfWriteHeader(buf, BF_FC_PROBE_REQ, BROADCAST_MAC, addr2,
+                             BROADCAST_MAC);
+  off = bfAppendSSID(buf, off, nullptr);            // zero-length = wildcard
+  off = bfAppendIE(buf, off, 0x02,   tag2,   sizeof(tag2));
+  off = bfAppendIE(buf, off, 0x0C,   tag12,  sizeof(tag12));
+  off = bfAppendIE(buf, off, 0x7F,   tag127, sizeof(tag127));
+  off = bfAppendIE(buf, off, 0xDD,   vend1,  sizeof(vend1));
+  off = bfAppendIE(buf, off, 0x2D,   tag45,  sizeof(tag45));
+  off = bfAppendIE(buf, off, 0xBF,   tag191, sizeof(tag191));
+  off = bfAppendIE(buf, off, 0xDD,   vend2,  sizeof(vend2));
+  return off;
+}
+
+// Wildcard probe from a high-tier OUI whose IEs ALSO match the drive-tested
+// fingerprint. The detector must report the SAME method (wildcard_probe) but a
+// HIGHER confidence than scenario 1 — 62 + CS_IE_SIG_BONUS(18) = 80. Comparing
+// this against scenario 1's score is the whole point of the scenario: it proves
+// the bonus is applied without changing which gate fired.
+static void scenario15_IeSignature() {
+  uint8_t mac[6]; randomMacWithOui(fy_oui_high[random(0, (long)FY_OUI_HIGH_COUNT)], mac);
+  uint8_t buf[BF_MAX_FRAME];
+  size_t len = bfBuildIeSigProbe(buf, mac);
+  txSweep(buf, len);
+  char s[18]; macToStr(mac, s, sizeof(s));
+  Serial.printf("[beacon] 15 ALERT_WILDCARD_PROBE  addr2=%s +IE-sig"
+                " (expect conf 80, vs 62 for scenario 1)\n", s);
+}
+
+// CVE-2025-59409: "test_flck" is the development Wi-Fi credential string Flock
+// shipped in production Falcon/Sparrow firmware. It contains no "flock"
+// substring (f-l-c-k vs f-l-o-c-k), so this scenario only passes because of the
+// dedicated "flck" keyword — if it regresses, this is the scenario that fails.
+static void scenario16_FlckSsid() {
+  uint8_t buf[BF_MAX_FRAME];
+  size_t len = bfBuildBeaconLike(buf, BF_FC_PROBE_RESP, BROADCAST_MAC,
+                                  GA_DUMMY_MAC, GA_DUMMY_MAC, "test_flck",
+                                  sweepChannels[0]);
+  txSweep(buf, len);
+  Serial.println("[beacon] 16 ALERT_SSID            ssid=\"test_flck\""
+                 " (CVE-2025-59409, matches via the \"flck\" keyword)");
+}
+
 typedef void (*ScenarioFn)();
 static const ScenarioFn scenarios[NUM_SCENARIOS] = {
   scenario0_OuiAddr2, scenario1_WildcardProbe, scenario2_OuiAddr1,
@@ -456,6 +518,7 @@ static const ScenarioFn scenarios[NUM_SCENARIOS] = {
   scenario6_OuiMfr,   scenario7_SoundThinking, scenario8_SeqMacPair,
   scenario9_BleMfrId, scenario10_BleRavenUuid, scenario11_BleName,
   scenario12_FwDefaultMac, scenario13_BleFlockGatt, scenario14_BleSerialName,
+  scenario15_IeSignature,  scenario16_FlckSsid,
 };
 
 static void fireNextScenario() {

@@ -18,16 +18,38 @@ LED flash / chirp (if `confidence >= CHIRP_MIN_CONFIDENCE`, currently 30)
 | `ALERT_FW_DEFAULT_MAC`| `addr2` equals, byte-for-byte, one of `fy_exact_macs[]` — the **factory-default** QCA9377 radio MACs from the camera firmware image (`00:03:7f:50:00:01`, `00:03:7f:4f:00:16`) | `fw_default_mac` | Firmware-derived (2026-09-16). `CS_FW_DEFAULT_MAC=55`. Checked *before* the OUI tiers because those MACs live inside the ubiquitous `00:03:7f` Qualcomm Atheros prefix (mfr-tier, 20, silent) — the full address is the specific part, so the mfr-tier emission is suppressed for the same frame. Only ever fires on an **unprovisioned** unit (provisioning rewrites the MAC). |
 | `ALERT_OUI_ADDR1`     | `addr1` (receiver/dest) matches a high-confidence OUI, not multicast      | `oui_addr1`        | Catches cameras appearing as probe-response destinations |
 | `ALERT_OUI_ADDR3`     | `addr3` (BSSID) matches, mgmt frames only, not multicast                 | `oui_addr3`        | Fallback for randomized `addr2` |
-| `ALERT_WILDCARD_PROBE`| Probe Request with high/mfr-tier OUI **and** a zero-length (wildcard) SSID IE | `wildcard_probe` | Flock cameras scan with empty-SSID probes |
-| `ALERT_SSID`          | Beacon/Probe-Resp/Probe-Req SSID contains a keyword (`flock`, `flocksafety`, `penguin`, `pigvision`, `fs ext battery`), globally-administered MAC | `ssid` | `fs ext battery` added from the firmware-derived set (FS Ext Battery pack SoftAP) |
+| `ALERT_WILDCARD_PROBE`| Probe Request with high/mfr-tier OUI **and** a zero-length (wildcard) SSID IE | `wildcard_probe` | Flock cameras scan with empty-SSID probes. **+18 (`CS_IE_SIG_BONUS`) when the IEs also match the drive-tested LiteOn/USI fingerprint** — see the IE note below. |
+| `ALERT_SSID`          | Beacon/Probe-Resp/Probe-Req SSID contains a keyword (`flock`, `flocksafety`, `penguin`, `pigvision`, `fs ext battery`, `flck`), globally-administered MAC | `ssid` | `fs ext battery` added from the firmware-derived set (FS Ext Battery pack SoftAP). `flck` exists only for the truncated **CVE-2025-59409** spelling `test_flck`, which does *not* contain `flock` (f-l-c-k vs f-l-o-c-k), so without its own entry such a camera is invisible to the SSID path. |
 | `ALERT_LAA_SSID`      | Same SSID match, but transmitter MAC is **locally-administered** (bit 1 of first octet set) | `laa_ssid` | Issue-#43 "Flock Camera net." camera class — LAA MACs never match any OUI table, so SSID is the only handle. Gets a sequential-MAC pair bonus if a `:DE`/`:DF` adjacent-channel pair is seen (`checkSeqMac()`). |
-| `ALERT_OUI_MFR`       | `addr2` matches a contract-manufacturer OUI (Liteon/USI) shared with non-Flock devices | `oui_mfr` | Lower confidence (`CS_OUI_MFR=20` < `CHIRP_MIN_CONFIDENCE=30`) — logged silently, no chirp/LED alone |
+| `ALERT_OUI_MFR`       | `addr2` matches a contract-manufacturer OUI (Liteon/USI, incl. `14:b5:cd`) shared with non-Flock devices | `oui_mfr` | Lower confidence (`CS_OUI_MFR=20` < `CHIRP_MIN_CONFIDENCE=30`) — logged silently, no chirp/LED alone. Liteon OUIs live in this tier even when the community dataset lists them flat (`14:b5:cd`): the silicon ships in unrelated consumer gear, so HIGH would reintroduce the `f8:a2:d6` false-positive class. |
 | `ALERT_SOUNDTHINKING` | `addr2` matches the SoundThinking/ShotSpotter acoustic-sensor OUI          | `soundthinking`    | Often co-deployed with Flock cameras; `CS_SOUNDTHINKING=35` does chirp |
 
 Sequential-MAC bonus: two wildcard-probe hits from the same OUI prefix
 with suffix bytes `:DE` then `:DF` on adjacent channels within a short
 window get a confidence bonus (`applySeqMacBonus()`, tracked in
 `seqMacTable[]`, size `SEQ_MAC_TABLE_SIZE`).
+
+IE-fingerprint bonus (`fyCheckFlockIeSignature()` in `fy_detect.h` →
+`applyIeSigBonus()` in `fy_confidence.h`): the Probe Request's raw IE TLVs are
+walked in order and encoded as a signature string — SSID skipped, vendor IE 221
+as `"221:"` + 8 payload bytes hex, every other IE as its decimal tag — then
+compared against the drive-tested allowlist
+`2,12,127,221:506f9a16030103,45,191,221:0050f208000000` (upstream
+colonelpanichacks/flock-you). A match adds `CS_IE_SIG_BONUS=18` (62 → 80).
+Two deliberate design points:
+
+- **Additive, never a gate.** Upstream *replaced* its wildcard-probe check with
+  this signature and justified disabling its addr1/addr3 tiers on the back of
+  it. This build does not: a camera on firmware we have not fingerprinted must
+  stay detectable, so a non-match still enqueues at 62. `DETECTION_IMPROVEMENTS.md`
+  §7 reaches the same conclusion. The allowlist is an array specifically so a
+  second, firmware-derived fingerprint can be **added** later, not swapped in.
+- **Tolerant parsing on purpose.** ESP32 promiscuous captures are routinely
+  truncated or skewed, so the walk accepts a phantom tag-64/len-128 overflow,
+  resyncs forward to the next plausible TLV header, and retries from three
+  spans: full body, `body+2` (no leading empty-SSID IE), and body minus the
+  trailing 4-byte FCS. Counter: `iesig=` in the `stats gate` line — flat `iesig`
+  with rising `wild` means probes arrive but the fingerprint does not match.
 
 ## BLE detections (`fyProcessBLEAdvertisedDevice()` in `main.cpp`, only
 when `ENABLE_BLE_SCAN=1`)
@@ -41,6 +63,19 @@ when `ENABLE_BLE_SCAN=1`)
 
 Notes on the firmware-derived BLE additions (2026-09-16 dump):
 
+- **Standard Bluetooth SIG services must never alert standalone.** `0x180A`
+  (Device Information), `0x1809` (Health Thermometer) and `0x1819` (Location and
+  Navigation) used to sit in `fy_raven_uuids[]` because GainSec lists them; they
+  are advertised by essentially every BLE device made, so at
+  `CS_BLE_UUID_STANDALONE=45` (above the chirp threshold) an ordinary fitness
+  band alerted as a "Raven camera". They now live in
+  `fy_raven_legacy_uuids[]` as **firmware-estimation evidence only**, and
+  `fyService16IsStandardSvc()` is consulted by the matcher so that re-adding one
+  to the alert table cannot resurrect the bug. Two tests enforce this
+  (`test_raven_uuid_standard_services_never_alert`,
+  `test_raven_table_has_no_standard_services`). Note the deliberate
+  **test-behaviour change**: the old `test_raven_uuid_known_device_info`
+  asserted 0x180A matched positively.
 - The Raven `0x3100`–`0x3500` **range** match exists because the named list only
   holds the round hundred values — the services that actually leak GPS
   (`0x3101`/`0x3102`) are *not* in it, so exact-string matching alone silently
@@ -85,13 +120,16 @@ without generating alert fatigue.
   single board self-advertises the 3 BLE scenarios and picks them back up
   via its own always-on coex scan.
 - `beacon_test.cpp` (`m5atom-lite-beacon` env, separate standalone
-  firmware): broadcasts all 15 scenarios (10 WiFi + 5 BLE, 1:1 with the
+  firmware): broadcasts all 17 scenarios (12 WiFi + 5 BLE, 1:1 with the
   tables above) on a rotating schedule, for testing against a SECOND board
   running the real detector — the preferred test method since it doesn't
   depend on same-radio self-reception quirks. Scenarios 12–14 cover the
   firmware-derived additions specifically (exact default-MAC, Flock
   accessory GATT service, and a bare-serial BLE name that only the shape
-  matcher can catch), and each derives its payload from `fy_detect.h`'s
+  matcher can catch), scenario 15 fires the IE-signature probe (same method as
+  scenario 1 but conf 80 instead of 62 — comparing the two *is* the test), and
+  scenario 16 carries the CVE-2025-59409 `test_flck` SSID, and each derives its
+  payload from `fy_detect.h`'s
   tables rather than re-hardcoding it. Each WiFi scenario is sent
   via `txSweep()`, which repeats the {1,6,11} channel sweep
   `SWEEP_PASSES` times (currently 6, ~576 ms total burst) so a single
