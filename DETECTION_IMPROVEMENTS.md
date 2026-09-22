@@ -475,6 +475,16 @@ pio run -e esp32dev --build-flag=-DTESTING_MODE=1 -t upload
    defensive "phantom overflow" / "TLV resync" handling upstream added for
    malformed/truncated ESP32 promiscuous captures.
 
+   **DONE (269c082), and the first attempt got the tier wrong — read this
+   before adding any future bonus.** The bonus was applied to every OUI tier,
+   which lifted an mfr-tier wildcard probe from `CS_OUI_MFR` (20, deliberately
+   below `CHIRP_MIN_CONFIDENCE`) to 38 — over the threshold — reintroducing the
+   exact false-positive class the mfr tier exists to prevent, with the
+   documented symptom of status LEDs appearing permanently stuck red (the same
+   failure this file's own `ALERT_WILDCARD_PROBE` case had already recorded).
+   Fixed in 89425b3 by gating on `isHigh`; **the bonus must never be applied to
+   a tier whose floor is intentionally silent.**
+
 8. **Cross-reference `jbohack/nyanBOX`'s Flock detector** (August 2026
    research) — nyanBOX is a commercial multi-tool ESP32 gadget whose Flock
    detector traces back to this same upstream codebase. Its OUI list

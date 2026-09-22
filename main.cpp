@@ -426,7 +426,7 @@ typedef struct {
   volatile uint32_t candAddr2;             // OUI hit on addr2 (any tier)
   volatile uint32_t candFwMac;             // exact firmware-default MAC in addr2
   volatile uint32_t candWildcard;          // wildcard probe request
-  volatile uint32_t candIeSig;             // IE signature matched (bonus applied)
+  volatile uint32_t candIeSig;             // IE fingerprint matched (bonus only on high tier)
   volatile uint32_t candAddr1;             // OUI hit on addr1
   volatile uint32_t candAddr3;             // OUI hit on addr3
   volatile uint32_t candSsid;              // SSID keyword hit, GA MAC
@@ -1904,17 +1904,32 @@ static void IRAM_ATTR wifiSniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
           if (r == -1 && bodyLen > 4) r = isWildcardProbeIE(body, bodyLen - 4);
           if (r == 1) {
             uint8_t conf = computeConfidence(ALERT_WILDCARD_PROBE, hdr->addr2, rssi, nullptr);
-            // IE-fingerprint bonus — ADDITIVE only. Matching the drive-tested
-            // LiteOn/USI fingerprint raises confidence; NOT matching it still
-            // enqueues the alert at its normal score, so a camera running
-            // firmware we have not fingerprinted stays detectable. This is
-            // deliberately unlike upstream, which replaced its wildcard-probe
-            // gate with the signature (see fy_detect.h's IE section).
+            // IE-fingerprint check. Two rules matter here:
+            //
+            //  1. It is ADDITIVE, never a gate — a non-match still enqueues at
+            //     the normal score, so a camera on firmware we have not
+            //     fingerprinted stays detectable (deliberately unlike upstream,
+            //     which replaced its wildcard-probe gate with the signature).
+            //
+            //  2. It only ever raises confidence for a HIGH-tier OUI. The
+            //     contract-manufacturer tier is deliberately capped BELOW
+            //     CHIRP_MIN_CONFIDENCE (CS_OUI_MFR=20 < 30) because Liteon/USI
+            //     silicon ships in unrelated laptops/phones/IoT, and this code
+            //     already records why: scoring mfr-tier wildcard probes highly
+            //     "caused frequent false detections that kept re-triggering
+            //     ledFlash() faster than it could expire, making status LEDs
+            //     appear permanently stuck red" (see computeConfidence()'s
+            //     ALERT_WILDCARD_PROBE case). Adding a flat +18 bonus for every
+            //     OUI tier silently reopened that hole — 20 + 18 = 38 crosses
+            //     the chirp threshold — so the bonus is gated on the tier whose
+            //     OUI is Flock-exclusive. The fingerprint was drive-tested on
+            //     Flock's own LiteOn-built radio, so an mfr-tier match is
+            //     expected to be common and is not evidence on its own.
             if (fyCheckFlockIeSignature(body, bodyLen)) {
-              conf = applyIeSigBonus(conf);
 #if FY_SNIFF_STATS
               FY_STAT_BUMP(fyStats.candIeSig);
 #endif
+              if (isHigh) conf = applyIeSigBonus(conf);
             }
             uint8_t pairCh = 0;
             if (checkSeqMac(hdr->addr2, ch, &pairCh)) {

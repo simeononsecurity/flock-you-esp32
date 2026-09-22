@@ -66,7 +66,14 @@
 // bonus on top of ALERT_WILDCARD_PROBE, never a replacement gate — a camera on
 // firmware we have not fingerprinted must stay detectable, so this can only
 // raise confidence, never remove recall. See DETECTION_IMPROVEMENTS.md §7.
-#define CS_IE_SIG_BONUS         18  // IE signature matched (62 → 80 on high tier)
+//
+// HIGH-TIER OUIs ONLY — wifiSniffer gates on isHigh(). Applying it to an
+// mfr-tier hit would lift 20 → 38, past CHIRP_MIN_CONFIDENCE, which is exactly
+// the false-positive class the mfr tier exists to prevent. This file's
+// ALERT_WILDCARD_PROBE case records what that costs: mfr-tier wildcard probes
+// scoring high "kept re-triggering ledFlash(LED_FLASH_MS) faster than it could
+// expire, making status LEDs appear permanently stuck red".
+#define CS_IE_SIG_BONUS         18  // IE sig matched on a HIGH-tier OUI (62 → 80)
 #define CS_SSID_FLOCK           32  // SSID contains "flock" (any case)
 #define CS_SSID_FLOCK_CAM_NET   45  // exact "Flock Camera net." — very specific
 #define CS_LAA_MAC              12  // locally-administered MAC + Flock SSID

@@ -56,6 +56,18 @@ tooling (`api/*.py`) in this repository.
   S3R module (audio-only, no discrete RGB LED), not a library version-lag
   bug — do not "fix" it by bumping the M5Unified version pin.
 
+- **A scoring change must be checked against the confidence TIER it applies to,
+  not just against the signal it rewards.** A flat bonus/weight can lift a tier
+  that is deliberately held *below* `CHIRP_MIN_CONFIDENCE` up over it, silently
+  converting a tier designed to log quietly into one that chirps and flashes.
+  This project has now been bitten twice: the mfr-tier wildcard-probe case
+  (recorded in `computeConfidence()`), and the IE-fingerprint bonus — applied to
+  every OUI tier, it took mfr hits from `CS_OUI_MFR` (20, silent) to 38, over the
+  chirp threshold, until it was gated on `isHigh`. The symptom in both cases is
+  LEDs that appear **permanently stuck red**, because the extra detections
+  re-trigger `ledFlash()` faster than it can expire. Before adding a weight,
+  state which tiers it can reach and compute the resulting score at *each tier's
+  existing floor*.
 - **Prefer explicit over implicit in ambiguous API calls.** When a C++ API
 
   has multiple overloads that could plausibly be selected by argument

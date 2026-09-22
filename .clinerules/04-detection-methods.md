@@ -35,7 +35,14 @@ walked in order and encoded as a signature string — SSID skipped, vendor IE 22
 as `"221:"` + 8 payload bytes hex, every other IE as its decimal tag — then
 compared against the drive-tested allowlist
 `2,12,127,221:506f9a16030103,45,191,221:0050f208000000` (upstream
-colonelpanichacks/flock-you). A match adds `CS_IE_SIG_BONUS=18` (62 → 80).
+colonelpanichacks/flock-you). A match adds `CS_IE_SIG_BONUS=18` (62 → 80) —
+**high-tier OUIs only**. Applying it to an mfr-tier hit would lift 20 → 38, past
+`CHIRP_MIN_CONFIDENCE` (30), which is precisely the false-positive class the mfr
+tier exists to prevent; that combination previously made status LEDs appear
+permanently stuck red. The `iesig=` counter still counts every fingerprint match
+(including mfr-tier), so its prevalence on shared Liteon/USI hardware stays
+visible — if `iesig` climbs on mfr-tier traffic, the fingerprint is too generic
+to keep.
 Two deliberate design points:
 
 - **Additive, never a gate.** Upstream *replaced* its wildcard-probe check with

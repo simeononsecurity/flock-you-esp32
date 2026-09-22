@@ -233,7 +233,7 @@ the dashboard/CSV export). The full set:
 | `oui_addr2` | `wifi` | `addr2` matches a high-confidence Flock OUI | 40 |
 | `fw_default_mac` | `wifi` | `addr2` is an exact **factory-default** camera radio MAC (`00:03:7f:50:00:01` / `…:4f:00:16`) — an unprovisioned unit | 55 |
 | `oui_addr1` / `oui_addr3` | `wifi` | OUI in the receiver (`addr1`) / BSSID (`addr3`) — AP-echo paths, deliberately quieter | 18 / 12 |
-| `wildcard_probe` | `wifi` | High/mfr-tier OUI **+** empty-SSID probe request. **+18** when the probe's IEs also match the drive-tested LiteOn/USI fingerprint (62 → 80) | 62 (`oui_addr2`+`wildcard_probe`) / 20 mfr |
+| `wildcard_probe` | `wifi` | High/mfr-tier OUI **+** empty-SSID probe request. **+18** when the probe's IEs also match the drive-tested LiteOn/USI fingerprint (62 → 80) — high-tier OUIs only, so an mfr-tier hit stays at 20 and cannot cross the chirp threshold | 62 (`oui_addr2`+`wildcard_probe`) / 20 mfr |
 | `ssid` | `wifi` | SSID keyword hit from a globally-administered MAC | 32, or 45 for exact `Flock Camera net.` |
 | `laa_ssid` | `wifi` | SSID keyword hit from a **locally-administered** MAC (issue-#43 cameras) | +12 over `ssid` |
 | `oui_mfr` | `wifi` | Contract-manufacturer OUI (Liteon/USI, **`00:03:7f`** Qualcomm Atheros) — silent alone | 20 |
