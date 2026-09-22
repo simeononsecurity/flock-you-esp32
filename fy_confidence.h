@@ -98,6 +98,14 @@
                                     //   confidence, this ID is Flock-specific
 #define CS_BLE_UUID_STANDALONE   45  // Raven/Flock 128-bit service UUID — high
                                     //   confidence, GainSec-confirmed UUIDs
+// A 16-bit service that lands in the Raven 0x3100-0x3500 *range* but is NOT one
+// of the documented named services. Deliberately below CHIRP_MIN_CONFIDENCE: that
+// block is not a Bluetooth SIG assignment, so any vendor may use a value in it,
+// and a live false positive proved the range alone is not evidence — an unnamed
+// device with a randomised MAC at -88 dBm chirped and held the LED red on the
+// strength of nothing but being "in range". Still recorded and logged (its own
+// method string + `stats ble … ravenrange=`) so its prevalence stays visible.
+#define CS_BLE_UUID_RANGE_STANDALONE 20
 #define CS_BLE_NAME_STANDALONE   35  // BLE device-name substring — good but
                                     //   slightly less specific than mfr-ID/UUID
 // Firmware-derived additions (Flock camera firmware dump, 2026-09-16; upstream
@@ -411,6 +419,11 @@ static uint8_t IRAM_ATTR computeConfidence(AlertType type, const uint8_t* mac,
     case ALERT_BLE_RAVEN_UUID:
       // Standalone Raven/Flock 128-bit BLE service UUID match.
       score += CS_BLE_UUID_STANDALONE;
+      break;
+    case ALERT_BLE_RAVEN_RANGE:
+      // Unnamed service inside the Raven 0x3100-0x3500 block — deliberately below
+      // the chirp threshold. See CS_BLE_UUID_RANGE_STANDALONE.
+      score += CS_BLE_UUID_RANGE_STANDALONE;
       break;
     case ALERT_BLE_NAME:
       // Standalone BLE device-name substring match.

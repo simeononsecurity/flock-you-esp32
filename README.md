@@ -194,6 +194,13 @@ This firmware uses **five research-proven techniques** with a confidence score (
 ### 4. BLE Detection + Cross-Correlation (`ENABLE_BLE_SCAN=1`)
 - Passive NimBLE scan for Flock BLE advertisements
 - Checks: mfr-ID `0x09C8` (XUNTONG/Flock), Raven service UUIDs (GainSec) **plus the whole Raven `0x3100`–`0x3500` service range**, device names, the **Flock accessory GATT service** (`e8ccbb38-…`) and the **Nordic legacy DFU service** — plus name *shapes* a keyword list can't express: `Penguin-NNNNNNNNNN`, a bare 10-digit serial, `DfuTarg`
+- **A bare "in the Raven block" match no longer alerts.** Only the 5 named
+  Raven services may alert stand-alone; any *unnamed* value that merely falls
+  inside `0x3100`–`0x3500` is recorded as `ble_raven_range` and stays silent.
+  That block is unassigned by the Bluetooth SIG, so any vendor may use a value
+  in it — and a live false positive proved it: an unnamed device with a
+  **randomised MAC at −88 dBm** chirped and held the LED red on the strength of
+  nothing but being "in range". Recovered by `stats ble … ravenrange=`.
 - **Standard Bluetooth SIG services never alert on their own.** `0x180A`
   (Device Information), `0x1809` (Health Thermometer) and `0x1819` (Location and
   Navigation) appear in GainSec's Raven write-up, but they are advertised by
@@ -240,7 +247,8 @@ the dashboard/CSV export). The full set:
 | `soundthinking` | `wifi` | SoundThinking/ShotSpotter acoustic-sensor OUI | 35 |
 | `ble_mfr_id` | `ble` | BLE manufacturer data company ID `0x09C8` (XUNTONG/Flock) | 45 |
 | `ble_name` | `ble` | Device name keyword **or** shape match (`Penguin-NNNNNNNNNN`, bare 10-digit serial, `FS Ext Battery`, `DfuTarg`, …) | 35 |
-| `ble_raven_uuid` | `ble` | Raven service UUID — the named table **or** anywhere in `0x3100`–`0x3500` (the range covers `0x3101`/`0x3102`, which leak GPS). Standard SIG services (`0x180A`/`0x1809`/`0x1819`) are excluded | 45 |
+| `ble_raven_uuid` | `ble` | Advertised service UUID matches one of the 5 **named** Raven services (GainSec-documented). Standard SIG services (`0x180A`/`0x1809`/`0x1819`) are excluded | 45 |
+| `ble_raven_range` | `ble` | Advertised 16-bit service falls **inside `0x3100`–`0x3500` but is not one of the named services** — recorded and logged, but deliberately **silent** (below the chirp threshold). That block is not a Bluetooth SIG assignment, so any vendor may use a value in it | 20 |
 | `ble_flock_gatt` | `ble` | Flock accessory service `e8ccbb38-…` or Nordic legacy DFU service | 45 |
 
 Notes for dashboard consumers:

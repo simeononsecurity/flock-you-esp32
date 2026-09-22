@@ -60,14 +60,20 @@ tooling (`api/*.py`) in this repository.
   not just against the signal it rewards.** A flat bonus/weight can lift a tier
   that is deliberately held *below* `CHIRP_MIN_CONFIDENCE` up over it, silently
   converting a tier designed to log quietly into one that chirps and flashes.
-  This project has now been bitten twice: the mfr-tier wildcard-probe case
-  (recorded in `computeConfidence()`), and the IE-fingerprint bonus — applied to
-  every OUI tier, it took mfr hits from `CS_OUI_MFR` (20, silent) to 38, over the
-  chirp threshold, until it was gated on `isHigh`. The symptom in both cases is
+  This project has now been bitten **three** times, all with the same symptom —
   LEDs that appear **permanently stuck red**, because the extra detections
-  re-trigger `ledFlash()` faster than it can expire. Before adding a weight,
-  state which tiers it can reach and compute the resulting score at *each tier's
-  existing floor*.
+  re-trigger `ledFlash()` faster than it can expire:
+    1. the mfr-tier wildcard-probe case (recorded in `computeConfidence()`);
+    2. the IE-fingerprint bonus, applied to every OUI tier, which took mfr hits
+       from `CS_OUI_MFR` (20, silent) to 38 — fixed by gating on `isHigh`;
+    3. the BLE **Raven `0x3100`–`0x3500` range**, which was scored as a
+       standalone Raven camera at 45 even though only 5 values in that
+       unassigned 1025-value block are documented — fixed with the weak
+       `ble_raven_range` tier (89425b3's sibling).
+  Before adding a weight, state which tiers it can reach and compute the
+  resulting score at *each tier's existing floor*. When a matcher covers a
+  *range* of values rather than a named list, assume it matches unrelated
+  hardware and score it accordingly.
 - **Prefer explicit over implicit in ambiguous API calls.** When a C++ API
 
   has multiple overloads that could plausibly be selected by argument

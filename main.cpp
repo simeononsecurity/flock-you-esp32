@@ -355,8 +355,9 @@ static const char* ssid_exact_flock_cam_net = "Flock Camera net.";
 #define AUTOSAVE_INTERVAL_MS 60000
 
 // Confidence weights, OUI byte tables, and sequential-MAC tracking moved to
-// fy_confidence.h (included further below, after AlertType/isFcnSsid are
-// defined — see the "CONFIDENCE SCORE COMPUTATION" section).
+// fy_confidence.h — included near the bottom of this file (see the
+// "CONFIDENCE SCORE COMPUTATION" section) because it needs AlertType and
+// isFcnSsid() declared first.
 
 // ============================================================
 // SNIFF STATS — arrival-vs-match instrumentation (diagnostic)
@@ -436,6 +437,7 @@ typedef struct {
   volatile uint32_t bleAdvTotal;           // advertisements handed to the matcher
   volatile uint32_t bleCandMfrId;
   volatile uint32_t bleCandUuid;
+  volatile uint32_t bleCandRavenRange;     // in-range but UNNAMED Raven-block service
   volatile uint32_t bleCandName;
   volatile uint32_t bleCandGatt;           // Flock accessory / Nordic DFU service
 #endif
@@ -502,6 +504,13 @@ typedef enum : uint8_t {
   // values must stay stable.
   ALERT_BLE_FLOCK_GATT  = 11,  // Flock accessory / Nordic DFU GATT service
   ALERT_FW_DEFAULT_MAC  = 12,  // exact firmware-default QCA9377 MAC in addr2
+  // Unnamed service inside the Raven 0x3100-0x3500 block — matched, logged and
+  // recorded, but scored BELOW the chirp threshold. Split out of
+  // ALERT_BLE_RAVEN_UUID after a live false positive (unnamed device, randomised
+  // MAC, -88 dBm) turned the alert LED red: that block is not a Bluetooth SIG
+  // assignment, so "in range" alone is not evidence of a Raven camera. See
+  // fyClassifyRavenUUIDFromStrings().
+  ALERT_BLE_RAVEN_RANGE = 13,
 } AlertType;
 
 // Is this alert type a BLE one? Used by maybeLockChannel() (BLE alerts have no
@@ -517,7 +526,8 @@ typedef enum : uint8_t {
 // class of bug, so keep it as the only source of truth for this question.
 static inline bool alertTypeIsBle(AlertType t) {
   return t == ALERT_BLE_MFR_ID || t == ALERT_BLE_RAVEN_UUID ||
-         t == ALERT_BLE_NAME   || t == ALERT_BLE_FLOCK_GATT;
+         t == ALERT_BLE_RAVEN_RANGE || t == ALERT_BLE_NAME ||
+         t == ALERT_BLE_FLOCK_GATT;
 }
 
 // Forward declaration. The definition lives much further down (in the
@@ -617,13 +627,27 @@ static void IRAM_ATTR enqueueAlert(AlertType type, const uint8_t* mac, int8_t rs
 // NEVER produced a real alert on its own). All of them are set above
 // CHIRP_MIN_CONFIDENCE=30 so a lone BLE match now chirps/flashes/logs just
 // like a WiFi OUI hit does, mirroring that existing tiered-confidence design.
-// Kept in sync with fy_confidence.h; duplicated here because
-// fyProcessBLEAdvertisedDevice() below is compiled before fy_confidence.h is
-// #include-d later in this file (re-#define-ing an identical macro is legal).
+//
+// Kept in sync with fy_confidence.h, which CANNOT be included this early:
+//   * it needs isFcnSsid() (defined far below in HELPERS) and
+//     g_bleFlockLastSeen (declared further down this section), and
+//   * this whole BLE section sits inside `#if ENABLE_BLE_SCAN`, while the header
+//     must be included for EVERY environment — computeConfidence() is also used
+//     by the WiFi paths. Including it here was tried on 2026-09-21 and reverted:
+//     it silently dropped the entire scoring engine from every non-BLE build
+//     (`'CHIRP_MIN_CONFIDENCE' was not declared in this scope`).
+//
+// The duplication is tolerated because it is compile-LOUD, not silent:
+// forgetting a NEW tier here fails the build, and re-defining an existing one
+// with a different value emits a macro-redefinition warning (the project builds
+// with zero warnings). Any new CS_BLE_* tier must be added in BOTH places.
 #define CS_BLE_MFR_ID_STANDALONE 45
 #define CS_BLE_UUID_STANDALONE   45
 #define CS_BLE_NAME_STANDALONE   35
 #define CS_BLE_GATT_STANDALONE   45
+#define CS_BLE_UUID_RANGE_STANDALONE 20  // unnamed in-range Raven-block service
+                                         //   (deliberately silent — see
+                                         //   fyClassifyRavenUUIDFromStrings())
 
 #if defined(BLE_SELF_TEST) && BLE_SELF_TEST
 static NimBLEAdvertising* g_pBLEAdv = nullptr;
@@ -709,10 +733,22 @@ static void fyProcessBLEAdvertisedDevice(NimBLEAdvertisedDevice* adv) {
       matched       = true;
       bleAlertType  = ALERT_BLE_FLOCK_GATT;
       bleConfidence = CS_BLE_GATT_STANDALONE;
-    } else if (fyCheckRavenUUIDFromStrings(strs, n, matchedUUID)) {
-      matched       = true;
-      bleAlertType  = ALERT_BLE_RAVEN_UUID;
-      bleConfidence = CS_BLE_UUID_STANDALONE;
+    } else {
+      // Two very different strengths of "Raven" evidence — see
+      // fyClassifyRavenUUIDFromStrings(). A named service (GainSec-documented)
+      // alerts standalone; an UNNAMED value that merely falls inside the
+      // 0x3100-0x3500 block is recorded below the chirp threshold instead, so it
+      // cannot hold the LED red on its own.
+      const int raven = fyClassifyRavenUUIDFromStrings(strs, n, matchedUUID);
+      if (raven == FY_RAVEN_MATCH_NAMED) {
+        matched       = true;
+        bleAlertType  = ALERT_BLE_RAVEN_UUID;
+        bleConfidence = CS_BLE_UUID_STANDALONE;
+      } else if (raven == FY_RAVEN_MATCH_RANGE) {
+        matched       = true;
+        bleAlertType  = ALERT_BLE_RAVEN_RANGE;
+        bleConfidence = CS_BLE_UUID_RANGE_STANDALONE;
+      }
     }
   }
 
@@ -743,6 +779,7 @@ static void fyProcessBLEAdvertisedDevice(NimBLEAdvertisedDevice* adv) {
     switch (bleAlertType) {
       case ALERT_BLE_MFR_ID:     FY_STAT_BUMP(fyStats.bleCandMfrId); break;
       case ALERT_BLE_RAVEN_UUID: FY_STAT_BUMP(fyStats.bleCandUuid);  break;
+      case ALERT_BLE_RAVEN_RANGE: FY_STAT_BUMP(fyStats.bleCandRavenRange); break;
       case ALERT_BLE_NAME:       FY_STAT_BUMP(fyStats.bleCandName);  break;
       case ALERT_BLE_FLOCK_GATT: FY_STAT_BUMP(fyStats.bleCandGatt);  break;
       default: break;
@@ -1362,10 +1399,11 @@ static void printSniffStats() {
              (unsigned long)fyStats.drained);
 
 #if defined(ENABLE_BLE_SCAN) && ENABLE_BLE_SCAN
-  dualPrintf("[flockyou] stats ble adv=%lu mfr=%lu uuid=%lu name=%lu gatt=%lu\n",
+  dualPrintf("[flockyou] stats ble adv=%lu mfr=%lu uuid=%lu ravenrange=%lu name=%lu gatt=%lu\n",
              (unsigned long)fyStats.bleAdvTotal,
              (unsigned long)fyStats.bleCandMfrId,
              (unsigned long)fyStats.bleCandUuid,
+             (unsigned long)fyStats.bleCandRavenRange,
              (unsigned long)fyStats.bleCandName,
              (unsigned long)fyStats.bleCandGatt);
 #endif
@@ -1403,11 +1441,11 @@ static void screenTick() {
 
 // Confidence weights, OUI byte tables, sequential-MAC tracking, and
 // computeConfidence()/applySeqMacBonus() all live in fy_confidence.h now.
-// Included here (not earlier) because computeConfidence() needs AlertType
-// (defined above in "ALERT QUEUE"), isFcnSsid() (defined above in
-// "HELPERS"), and — when ENABLE_BLE_SCAN=1 — g_bleFlockLastSeen (defined
-// above in "BLE CROSS-CORRELATION STATE"), all of which must already be
-// visible to the preprocessor at this point in the file.
+// MUST be included here (not in the BLE section above): computeConfidence() is
+// used by the WiFi paths, so every environment needs it, while the BLE section
+// is inside `#if ENABLE_BLE_SCAN` and would drop it from non-BLE builds. The
+// BLE-only CS_BLE_* tiers are mirrored in that section for the same reason —
+// see the note there.
 #include "fy_confidence.h"
 
 // Called from drainAlertQueue() whenever a chirp-worthy (confidence >=
@@ -1450,6 +1488,7 @@ static const char* alertTypeToMethod(AlertType t) {
     case ALERT_SOUNDTHINKING:  return "soundthinking";  // PR#39 SoundThinking
     case ALERT_BLE_MFR_ID:     return "ble_mfr_id";      // standalone BLE mfr-ID
     case ALERT_BLE_RAVEN_UUID: return "ble_raven_uuid";  // standalone Raven UUID
+    case ALERT_BLE_RAVEN_RANGE:return "ble_raven_range"; // unnamed in-range svc (silent)
     case ALERT_BLE_NAME:       return "ble_name";        // standalone BLE name
     case ALERT_BLE_FLOCK_GATT: return "ble_flock_gatt";  // Flock accessory/DFU svc
     case ALERT_FW_DEFAULT_MAC: return "fw_default_mac";  // exact fw-default MAC

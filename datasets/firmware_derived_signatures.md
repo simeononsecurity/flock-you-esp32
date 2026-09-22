@@ -62,14 +62,23 @@ means a Flock unit (or its battery) is physically nearby.
 | Manufacturer data company ID `0x09C8` (XUNTONG), payload embeds serials such as `TN72023022000771` | `ble_mfr_id` | Battery-pack advertisement manufacturer data (matched before this dump landed too) |
 | Flock accessory GATT service `e8ccbb38-9532-46a8-9fe5-1814df172e6f` | `ble_flock_gatt` | Flock accessory GATT definition in the firmware. Key characteristic `628913a6-8701-40ff-a3ce-8f453ff0818d`, control characteristic `bb18d1d2-fe71-439f-9529-d4b472d139b5` |
 | Nordic legacy DFU service `00001530-1212-efde-1523-785feabcd123` | `ble_flock_gatt` | Same update path as `DfuTarg` |
-| Raven camera GATT services, 16-bit range **`0x3100`–`0x3500`** | `ble_raven_uuid` | Exposed unauthenticated; `0x3101`/`0x3102` leak GPS latitude/longitude |
+| Raven camera GATT services, 16-bit range **`0x3100`–`0x3500`** | `ble_raven_range` (**silent** — see below) | Exposed unauthenticated; `0x3101`/`0x3102` leak GPS latitude/longitude. Recorded for the dashboard/JSON but scored below the chirp threshold. |
+| The 5 *named* Raven services (`0x3100`/`0x3200`/`0x3300`/`0x3400`/`0x3500`) | `ble_raven_uuid` | The only ones allowed to alert stand-alone |
 
-> **Why the Raven range check matters:** we previously matched only the named
-> round-hundred services (`0x3100`, `0x3200`, …). The services that actually
-> leak GPS are `0x3101`/`0x3102`, which are *not* in that list — so
-> exact-string matching silently missed the highest-value services. Matching
-> the whole range catches them (`fyService16FromUuidString()` on the ESP32, the
+> **Why the Raven range check is only informational:** we previously matched only
+> the named round-hundred services (`0x3100`, `0x3200`, …). The services that
+> actually leak GPS are `0x3101`/`0x3102`, which are *not* in that list — so
+> exact-string matching silently missed the highest-value services. Matching the
+> whole range catches them (`fyService16FromUuidString()` on the ESP32, the
 > equivalent regex in `api/flockyou.py`).
+>
+> **But the range must not alert.** `0x3100`–`0x3500` is not a Bluetooth SIG
+> assignment, so any vendor may use a value in it — and that broad match produced
+> a live false positive (2026-09-21): an unnamed device advertising a randomised
+> MAC at −88 dBm chirped and held the alert LED red, labelled a Raven camera,
+> purely for being in range. Range-only matches are therefore
+> `ble_raven_range` (score 20, below `CHIRP_MIN_CONFIDENCE`) and never alert.
+> Count them with `ravenrange=` in the `stats ble …` heartbeat line.
 
 ---
 

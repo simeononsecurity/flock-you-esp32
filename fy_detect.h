@@ -8,7 +8,10 @@
 //   OUI lists   — @NitekryDPaul (original 30), Michael/DeFlockJoplin (82:6b:f2),
 //                 dougborg/PR#39 (b4:1e:52 direct reg, FS Ext Battery, e0:0a:f6 mfr)
 //   BLE mfr-ID  — wgreenberg/flock-you (0x09C8 XUNTONG)
-//   Raven UUIDs — GainSec research (8 full 128-bit service UUIDs)
+//   Raven UUIDs — GainSec research (5 ***named*** 128-bit service UUIDs that may
+//                 alert stand-alone; the wider 0x3100-0x3500 block is matched
+//                 separately and scored below the chirp threshold — see
+//                 fyClassifyRavenUUIDFromStrings())
 //   SoundThinking — avenstewart/PR#39 (d4:11:d6 / formerly ShotSpotter)
 //   Firmware-extracted set — colonelpanichacks/flock-you upstream, from a Flock
 //                 Safety ALPR camera firmware dump (Qualcomm MSM8953 + QCA9377
@@ -527,14 +530,35 @@ static inline bool fyCheckRavenServiceRange(uint16_t svc16) {
   return svc16 >= FY_RAVEN_SVC_MIN && svc16 <= FY_RAVEN_SVC_MAX;
 }
 
-// Check an array of UUID strings against the known Raven service UUID list,
-// and against the 0x3100-0x3500 Raven service *range* (see FY_RAVEN_SVC_MIN).
-// Returns true on first match; sets out_uuid (up to 40 chars) if provided.
-// uuids[] must be lowercase or the comparison will still work because
-// strcasecmp is used.
-static inline bool fyCheckRavenUUIDFromStrings(const char** uuids, int count,
-                                               char* out_uuid) {
-  if (!uuids || count <= 0) return false;
+// How strong a Raven-service match is. The two are scored very differently by
+// the caller, because a *named* Raven service and "some 16-bit service inside a
+// 1025-value block" are not remotely the same evidence:
+//   FY_RAVEN_MATCH_NAMED — an exact documented Raven service (fy_raven_uuids[])
+//   FY_RAVEN_MATCH_RANGE — any other value in 0x3100-0x3500
+enum {
+  FY_RAVEN_MATCH_NONE  = 0,
+  FY_RAVEN_MATCH_NAMED = 1,
+  FY_RAVEN_MATCH_RANGE = 2
+};
+
+// Classify the advertised UUID list against the named Raven services and the
+// 0x3100-0x3500 range. Sets out_uuid (up to 40 chars) on a match.
+//
+// WHY THE SPLIT EXISTS — a live false positive (2026-09-21): the range match was
+// scored as a standalone Raven camera (CS_BLE_UUID_STANDALONE=45, above the
+// chirp threshold), so an unnamed device with a *randomised* MAC at -88 dBm —
+// i.e. something weak and far away — chirped and held the alert LED red, logged
+// as method=ble_raven_uuid. The 0x3100-0x3500 block is not a Bluetooth SIG
+// assignment, so any vendor may use a value in it; matching the whole block is a
+// *broad* heuristic, and scoring a broad heuristic as a specific one is the same
+// mistake as the mfr-tier/IE-bonus one in fy_confidence.h. Only the documented
+// services now alert; an unnamed in-range value is still matched, logged and
+// recorded (method=ble_raven_range) but stays below CHIRP_MIN_CONFIDENCE, so it
+// can no longer turn the LED red on its own.
+static inline int fyClassifyRavenUUIDFromStrings(const char** uuids, int count,
+                                                 char* out_uuid) {
+  if (!uuids || count <= 0) return FY_RAVEN_MATCH_NONE;
+  int best = FY_RAVEN_MATCH_NONE;
   for (int i = 0; i < count; i++) {
     if (!uuids[i]) continue;
     // Standard SIG services are not vendor evidence — skip them outright so a
@@ -545,17 +569,24 @@ static inline bool fyCheckRavenUUIDFromStrings(const char** uuids, int count,
     for (size_t j = 0; j < FY_RAVEN_UUID_COUNT; j++) {
       if (strcasecmp(uuids[i], fy_raven_uuids[j]) == 0) {
         if (out_uuid) strncpy(out_uuid, uuids[i], 40);
-        return true;
+        return FY_RAVEN_MATCH_NAMED;   // strongest possible answer
       }
     }
-    // Not one of the named services — but any in-range 16-bit service is a
-    // Raven camera advertiser (this is what catches 0x3101/0x3102).
+    // Not named — in-range values are recorded but classified as weak.
     if (svc >= 0 && fyCheckRavenServiceRange((uint16_t)svc)) {
       if (out_uuid) strncpy(out_uuid, uuids[i], 40);
-      return true;
+      best = FY_RAVEN_MATCH_RANGE;
     }
   }
-  return false;
+  return best;
+}
+
+// Back-compat wrapper: true for either kind of Raven match. Prefer the
+// classifier above where the confidence depends on which kind it was.
+static inline bool fyCheckRavenUUIDFromStrings(const char** uuids, int count,
+                                               char* out_uuid) {
+  return fyClassifyRavenUUIDFromStrings(uuids, count, out_uuid)
+         != FY_RAVEN_MATCH_NONE;
 }
 
 // Check an array of UUID strings against the Flock accessory / Nordic DFU

@@ -64,7 +64,8 @@ when `ENABLE_BLE_SCAN=1`)
 | AlertType             | Trigger                                                          | Method string     | Confidence |
 |-----------------------|--------------------------------------------------------------------|-------------------|------------|
 | `ALERT_BLE_MFR_ID`    | Manufacturer-specific data with company ID `0x09C8` (XUNTONG/Flock) | `ble_mfr_id`      | `CS_BLE_MFR_ID_STANDALONE=45` (+5 if RSSI > -70) |
-| `ALERT_BLE_RAVEN_UUID`| Advertised service UUID matches `fy_raven_uuids[]` **or falls anywhere in the Raven 16-bit range `0x3100`–`0x3500`** | `ble_raven_uuid` | `CS_BLE_UUID_STANDALONE=45` |
+| `ALERT_BLE_RAVEN_UUID`| Advertised service UUID matches one of the 5 **named** `fy_raven_uuids[]` services (GainSec-documented) | `ble_raven_uuid` | `CS_BLE_UUID_STANDALONE=45` |
+| `ALERT_BLE_RAVEN_RANGE`| Advertised 16-bit service is inside `0x3100`–`0x3500` but is **not** one of the named services | `ble_raven_range` | `CS_BLE_UUID_RANGE_STANDALONE=20` — **below `CHIRP_MIN_CONFIDENCE`, so silent.** See the note below. |
 | `ALERT_BLE_FLOCK_GATT`| Advertised service UUID matches `fy_ble_gatt_uuids[]` — the Flock accessory service `e8ccbb38-9532-46a8-9fe5-1814df172e6f` or the Nordic legacy DFU service `00001530-1212-efde-1523-785feabcd123` | `ble_flock_gatt` | `CS_BLE_GATT_STANDALONE=45` |
 | `ALERT_BLE_NAME`      | Device name matches `fyCheckFlockBleName()`: a substring keyword from `fy_ble_names[]` (`FS Ext Battery`, `Penguin`, `Flock`, `Pigvision`, `Raven`, `DfuTarg`) **or** a shape from `fyCheckBleNamePattern()` (`Penguin-` + 10 digits, a bare 10-digit serial, `FS Ext Battery`, `DfuTarg`) | `ble_name` | `CS_BLE_NAME_STANDALONE=35` |
 
@@ -83,10 +84,24 @@ Notes on the firmware-derived BLE additions (2026-09-16 dump):
   `test_raven_table_has_no_standard_services`). Note the deliberate
   **test-behaviour change**: the old `test_raven_uuid_known_device_info`
   asserted 0x180A matched positively.
-- The Raven `0x3100`–`0x3500` **range** match exists because the named list only
-  holds the round hundred values — the services that actually leak GPS
-  (`0x3101`/`0x3102`) are *not* in it, so exact-string matching alone silently
-  missed the highest-value services. `fyService16FromUuidString()` parses both
+- **The Raven `0x3100`–`0x3500` range is matched, but scored as a WEAK tier.**
+  The named list only holds the round hundred values, while the services that
+  leak GPS (`0x3101`/`0x3102`) sit between them — so the range must be matched or
+  those are missed entirely. But scoring an in-range match as a standalone Raven
+  camera (45) produced a **live false positive (2026-09-21)**: an unnamed device
+  with a randomised MAC at −88 dBm chirped and held the alert LED red, logged as
+  `ble_raven_uuid`, when the only thing "Raven" about it was that its service
+  UUID happened to land inside an unassigned 1025-value block. `ALERT_BLE_RAVEN_RANGE`
+  (`ble_raven_range`, `CS_BLE_UUID_RANGE_STANDALONE`=20) now records those below
+  the chirp threshold, so they still appear in the dashboard, the JSON and
+  `stats ble … ravenrange=` — they just cannot alert on their own. Only the 5
+  named services may alert stand-alone. If `ravenrange=` ever turns out to be
+  dominated by genuine Raven devices, revisit; if the *named* 5 ever false-fire
+  the same way, they need the same treatment.
+  `fyClassifyRavenUUIDFromStrings()` (FY_RAVEN_MATCH_NAMED / _RANGE / _NONE) is
+  what distinguishes them; `fyCheckRavenUUIDFromStrings()` stays as the
+  any-kind wrapper so existing callers/tests keep their meaning.
+  `fyService16FromUuidString()` parses both the
   the canonical 128-bit form NimBLE emits and the short `0x3101`/`3101` forms.
   (Intended side effect: a few **existing tests changed behaviour**, e.g. the
   old "short-form UUIDs never match" test still passes because `1b7e`/`fd60` sit

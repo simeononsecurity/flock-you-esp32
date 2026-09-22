@@ -5,6 +5,61 @@
 #include <unity.h>
 #include "../../fy_detect.h"
 
+// ── Raven match CLASSIFICATION (named vs merely in-range) ────────────────────
+// These two are scored very differently: a named, GainSec-documented service may
+// alert stand-alone, while an unnamed value that merely sits inside 0x3100-0x3500
+// is recorded below the chirp threshold. Splitting them was driven by a live
+// false positive: an unnamed device with a randomised MAC at -88 dBm chirped and
+// held the alert LED red purely for being "in range".
+
+void test_raven_classify_named(void) {
+    const char* gps[] = { "00003100-0000-1000-8000-00805f9b34fb" };
+    TEST_ASSERT_EQUAL_INT(FY_RAVEN_MATCH_NAMED,
+        fyClassifyRavenUUIDFromStrings(gps, 1, nullptr));
+    // The GPS-leaking services are inside the block but are NOT in the named
+    // table, so they classify as RANGE — deliberately, since a bare in-range
+    // value is what produced the false positive.
+    const char* u3101[] = { "00003101-0000-1000-8000-00805f9b34fb" };
+    TEST_ASSERT_EQUAL_INT(FY_RAVEN_MATCH_RANGE,
+        fyClassifyRavenUUIDFromStrings(u3101, 1, nullptr));
+}
+
+void test_raven_classify_range_and_none(void) {
+    const char* rng[]  = { "0x3110" };                      // in range, unnamed
+    TEST_ASSERT_EQUAL_INT(FY_RAVEN_MATCH_RANGE,
+        fyClassifyRavenUUIDFromStrings(rng, 1, nullptr));
+    const char* none[] = { "0x4100" };                      // outside the block
+    TEST_ASSERT_EQUAL_INT(FY_RAVEN_MATCH_NONE,
+        fyClassifyRavenUUIDFromStrings(none, 1, nullptr));
+}
+
+// A named service anywhere in the list must win over an in-range one, whichever
+// order they are advertised in — otherwise a device offering both would be
+// under-scored depending on NimBLE's enumeration order.
+void test_raven_classify_named_beats_range(void) {
+    const char* rangeFirst[] = {
+        "00003110-0000-1000-8000-00805f9b34fb",
+        "00003200-0000-1000-8000-00805f9b34fb",
+    };
+    TEST_ASSERT_EQUAL_INT(FY_RAVEN_MATCH_NAMED,
+        fyClassifyRavenUUIDFromStrings(rangeFirst, 2, nullptr));
+    const char* namedFirst[] = {
+        "00003200-0000-1000-8000-00805f9b34fb",
+        "00003110-0000-1000-8000-00805f9b34fb",
+    };
+    TEST_ASSERT_EQUAL_INT(FY_RAVEN_MATCH_NAMED,
+        fyClassifyRavenUUIDFromStrings(namedFirst, 2, nullptr));
+}
+
+// The boolean wrapper must keep its old meaning (ANY kind of Raven match), since
+// other callers still rely on it.
+void test_raven_wrapper_still_true_for_range(void) {
+    const char* rng[] = { "0x3110" };
+    TEST_ASSERT_TRUE(fyCheckRavenUUIDFromStrings(rng, 1, nullptr));
+    const char* none[] = { "0x4100" };
+    TEST_ASSERT_FALSE(fyCheckRavenUUIDFromStrings(none, 1, nullptr));
+}
+
 // ── Raven UUID matching tests ─────────────────────────────────────────────────
 
 void test_raven_uuid_known_vendor_service(void) {
@@ -218,6 +273,10 @@ int main(void) {
     RUN_TEST(test_raven_old_style_short_uuids_do_not_match);
 
     RUN_TEST(test_raven_range_gps_leaking_services);
+    RUN_TEST(test_raven_classify_named);
+    RUN_TEST(test_raven_classify_range_and_none);
+    RUN_TEST(test_raven_classify_named_beats_range);
+    RUN_TEST(test_raven_wrapper_still_true_for_range);
     RUN_TEST(test_raven_range_short_form);
     RUN_TEST(test_raven_range_bounds);
     RUN_TEST(test_raven_range_rejects_out_of_range);
