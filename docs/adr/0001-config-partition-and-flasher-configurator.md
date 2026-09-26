@@ -1,6 +1,6 @@
 # ADR-0001: Runtime config partition and web-flasher configurator
 
-**Status:** Proposed
+**Status:** Accepted — implemented for the firmware and the web flasher
 **Date:** 2026-09-19
 **Supersedes:** none
 
@@ -120,4 +120,31 @@ that blob from the user's choices and flash it as an extra manifest part.**
    firing while others still do, measured with the existing `FY_SNIFF_STATS`
    arrival/gate counters.
 4. Confirm a firmware reflash over an existing `fycfg` preserves settings.
+
+## Implementation notes (as built)
+
+- Written into the 64 KB that was already unallocated at the end of the 4 MB
+  layout, so **no existing partition offset moved** and `spiffs` kept its full
+  size — the "cost" listed above turned out not to be necessary.
+- The engine gate lives in `enqueueAlert()`, the single funnel every detection
+  passes through, rather than at the 16 call sites. One check covers every
+  current path and any future one, so a new engine cannot forget to honour a
+  user's "disable this" choice.
+- The configured threshold is applied as an **additional** gate on top of the
+  compile-time one, so it can only make a device quieter. It can never lower the
+  effective floor below `CHIRP_MIN_CONFIDENCE`, which is what keeps the
+  contract-manufacturer tier silent (see the stuck-red note above).
+- Suppressed detections are counted (`cfgskip=` in the stats line) so support can
+  distinguish "your config turned this off" from "the firmware never saw it".
+- `m5basicVibrationStop()` exists because simply skipping
+  `m5basicVibrationTick()` would leave the motor energised if a pulse was in
+  flight — a stuck vibrator is the same defect class as the stuck-red LEDs.
+- The config is loaded at the very top of `setup()`, before display init, so the
+  Core2 *startup* vibration pulses also honour a "no vibration" choice.
+
+**Cross-language verification of the blob layout** (the one thing a single-language
+test cannot prove): the real JS was extracted from `docs/index.html` and run under
+Node to emit a blob, which was then decoded by the real C codec on the host. Both
+sides produce the standard CRC-32 check value `0xCBF43926`, and the decoded
+fields (flags, engine mask, threshold, signed RSSI floor) matched exactly.
 

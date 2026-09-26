@@ -27,6 +27,49 @@
 #include <SPIFFS.h>
 #include "esp_log.h"
 #include "fy_detect.h"   // PR#39: detection patterns + pure matching functions
+#include "fy_config.h"   // user configuration blob (web-flasher configurator)
+#include "esp_partition.h"
+
+// ── User configuration (ADR-0001) ────────────────────────────────────────────
+// Loaded ONCE in setup(), BEFORE promiscuous mode and the BLE scan start, so the
+// ISR-side enqueueAlert() only ever reads a value that cannot change underneath
+// it — that ordering is what makes it safe to read these without a lock.
+//
+// g_cfgLoaded == false means "no user configuration", and every accessor then
+// returns the compile-time default, so a device flashed without a config (or
+// with the partition erased) behaves exactly as it did before this existed.
+// The loaded configuration (declared extern in fy_config.h so the display/UI
+// headers can gate their own outputs). Loaded ONCE at the very top of setup(),
+// before display init and before promiscuous mode / the BLE scan start — that
+// ordering is both why the UI can read it without a lock and why the Core2
+// startup vibration can honour the user's choice instead of buzzing anyway.
+FyConfig g_cfg;
+bool     g_cfgLoaded = false;
+
+// Read the `fycfg` partition and decode it. Returns true when a valid user
+// config was applied. Any failure — partition absent, erased, corrupt, or from a
+// newer schema — is reported and treated as "use defaults": a bad config must
+// never stop the detector from starting, which is the failure mode this project
+// has been bitten by repeatedly.
+static bool fyConfigLoad() {
+  const esp_partition_t* part = esp_partition_find_first(
+      ESP_PARTITION_TYPE_DATA, (esp_partition_subtype_t)0x40, "fycfg");
+  if (!part) {
+    Serial.println("[flockyou] config: no fycfg partition (defaults)");
+    return false;
+  }
+  uint8_t buf[FYCFG_TOTAL_LEN];
+  if (esp_partition_read(part, 0, buf, sizeof(buf)) != ESP_OK) {
+    Serial.println("[flockyou] config: partition read FAILED (defaults)");
+    return false;
+  }
+  if (!fyCfgDecode(buf, sizeof(buf), &g_cfg)) {
+    Serial.println("[flockyou] config: none/invalid (defaults)");
+    return false;
+  }
+  g_cfgLoaded = true;
+  return true;
+}
 
 // M5Stack Core2 For AWS has the same 320×240 ILI9342C display and M5Unified
 // button/speaker API as the M5Stack Basic. Map USE_M5CORE2_AWS → USE_M5BASIC at
@@ -440,11 +483,17 @@ typedef struct {
   volatile uint32_t bleCandRavenRange;     // in-range but UNNAMED Raven-block service
   volatile uint32_t bleCandName;
   volatile uint32_t bleCandGatt;           // Flock accessory / Nordic DFU service
+  volatile uint32_t bleBelowFloor;         // advertisements weaker than the user's floor
 #endif
   // ---- alert queue (closes the "matched but vanished" gap) ----
   volatile uint32_t enqueueOk;
   volatile uint32_t enqueueDrop;           // ring buffer full — previously silent
   volatile uint32_t drained;
+  // Suppressed by the user's configuration (ADR-0001) — a detection that
+  // MATCHED but was disabled in the web flasher. Counted separately from a
+  // non-match so support can tell "your config turned this off" from "the
+  // firmware never saw it", which is otherwise indistinguishable on screen.
+  volatile uint32_t disabledByConfig;
 } FySniffStats;
 
 static FySniffStats fyStats;
@@ -554,6 +603,24 @@ static portMUX_TYPE    queueMux  = portMUX_INITIALIZER_UNLOCKED;
 static void IRAM_ATTR enqueueAlert(AlertType type, const uint8_t* mac, int8_t rssi,
                                     uint8_t ch, const char* ssid, const char* kind,
                                     uint8_t confidence) {
+  // User configuration gate (ADR-0001). Gating HERE rather than at each of the
+  // 16 enqueue sites is deliberate: one check covers every current detection
+  // path and any future one, so a newly added engine cannot forget to honour a
+  // user's "disable this" choice.
+  //
+  // Safe to read without a lock because fyConfigLoad() completes in setup()
+  // before promiscuous mode and the BLE scan start — see the note on g_cfg.
+  {
+    uint32_t bit = (uint32_t)type;
+    uint32_t mask = g_cfgLoaded ? g_cfg.engines : FYCFG_DEFAULT_ENGINES;
+    if (bit >= 32u || (mask & (1u << bit)) == 0) {
+#if FY_SNIFF_STATS
+      FY_STAT_BUMP(fyStats.disabledByConfig);
+#endif
+      return;
+    }
+  }
+
   portENTER_CRITICAL_ISR(&queueMux);
   size_t next = (alertHead + 1) % ALERT_QUEUE_SIZE;
   // Ring buffer full: this return used to be completely silent, which made a
@@ -688,6 +755,17 @@ static void fyProcessBLEAdvertisedDevice(NimBLEAdvertisedDevice* adv) {
   FY_STAT_BUMP(fyStats.bleAdvTotal);
 #endif
   int8_t rssi = (int8_t)adv->getRSSI();
+
+  // User-configured BLE proximity floor (ADR-0001). A BLE detection is only
+  // evidence of a *nearby* device, and this project has already been bitten by
+  // alerting on an unnamed device at −94 dBm (see the Raven-range note). The
+  // floor lets a user trade reach for quiet without any firmware rebuild.
+  if (rssi < fyCfgRssiFloor(&g_cfg, g_cfgLoaded)) {
+#if FY_SNIFF_STATS
+    FY_STAT_BUMP(fyStats.bleBelowFloor);
+#endif
+    return;
+  }
   bool      matched       = false;
   AlertType bleAlertType  = ALERT_BLE_NAME;   // overwritten below once matched
   uint8_t   bleConfidence = 0;
@@ -1384,7 +1462,7 @@ static void printSniffStats() {
   // matched alert was lost between matching and logging.
   dualPrintf("[flockyou] stats gate a2=%lu fwmac=%lu wild=%lu iesig=%lu a1=%lu"
              " a3=%lu ssid=%lu laa=%lu seqpair=%lu"
-             " | queue ok=%lu drop=%lu drained=%lu\n",
+             " | queue ok=%lu drop=%lu drained=%lu cfgskip=%lu\n",
              (unsigned long)fyStats.candAddr2,
              (unsigned long)fyStats.candFwMac,
              (unsigned long)fyStats.candWildcard,
@@ -1396,7 +1474,8 @@ static void printSniffStats() {
              (unsigned long)fyStats.seqMacPairs,
              (unsigned long)fyStats.enqueueOk,
              (unsigned long)fyStats.enqueueDrop,
-             (unsigned long)fyStats.drained);
+             (unsigned long)fyStats.drained,
+             (unsigned long)fyStats.disabledByConfig);
 
 #if defined(ENABLE_BLE_SCAN) && ENABLE_BLE_SCAN
   dualPrintf("[flockyou] stats ble adv=%lu mfr=%lu uuid=%lu ravenrange=%lu name=%lu gatt=%lu\n",
@@ -2222,12 +2301,27 @@ static void drainAlertQueue() {
     // corresponding new detection. heartbeatBeep() itself is kept (still
     // used as a button-press acknowledgement sound, see HAS_SIMPLE_BUTTON
     // in loop()), only its unconditional periodic trigger was deleted.
-    if (chirpWorthy && e.confidence >= CHIRP_MIN_CONFIDENCE) {
+    // A chirp/LED is owed only when the detection is "chirp-worthy" AND at or
+    // above the user's configured threshold. The threshold is applied here as an
+    // ADDITIONAL gate on top of fyAddDetection's own CHIRP_MIN_CONFIDENCE test,
+    // so the configured value can only ever make the device QUIETER — it can
+    // never lower the effective floor below the compile-time one. That direction
+    // is deliberate: the contract-manufacturer tier is silent for a reason (see
+    // FYCFG_MIN_CHIRP_MIN in fy_config.h).
+    const bool outputOk = (e.confidence >= fyCfgChirpMin(&g_cfg, g_cfgLoaded));
+    if (chirpWorthy && outputOk && fyCfgOutputEnabled(&g_cfg, g_cfgLoaded, FYCFG_FLAG_CHIRP)) {
       newDetectChirp();
     }
 
-    if (e.confidence >= CHIRP_MIN_CONFIDENCE) {
-      ledFlash(LED_FLASH_MS);
+    if (outputOk) {
+      // LED and channel lock are gated separately: the LED is an output the user
+      // may switch off, while the lock is a *receiver* behaviour that makes the
+      // device keep listening on a channel where a camera was just confirmed.
+      // Suppressing the lock because someone turned the LED off would silently
+      // cost detections, so it stays tied to the alert itself.
+      if (fyCfgOutputEnabled(&g_cfg, g_cfgLoaded, FYCFG_FLAG_LED)) {
+        ledFlash(LED_FLASH_MS);
+      }
       maybeLockChannel(e);   // hold this channel while the camera is still audible
     }
 
@@ -2280,6 +2374,13 @@ static void autosaveTick() {
 void setup() {
   Serial.begin(115200);
   delay(300);
+
+  // Load the user configuration FIRST (ADR-0001), before any display/audio init
+  // and before the radios start. Two reasons: the Core2 startup vibration and the
+  // first screen would otherwise ignore a user's "no vibration"/"no sound"
+  // choice, and enqueueAlert() reads these from ISR context later — safe only
+  // because nothing writes them after this point.
+  fyConfigLoad();
 
 #if defined(USE_C5_DISPLAY) && USE_C5_DISPLAY
   c5DisplayInit();
@@ -2567,6 +2668,14 @@ void setup() {
   // Printed in the banner so support can tell what a unit speaks from a pasted
   // boot log, before any detection has occurred.
   dualPrintf("[flockyou] wire schema=%u\n", (unsigned)FY_WIRE_SCHEMA);
+  // Report whether a user configuration was applied, so support can tell
+  // "the user dialled this down in the flasher" from "the firmware never saw it"
+  // — see cfgskip= in the stats line for how many detections that suppressed.
+  dualPrintf("[flockyou] config=%s chirp_min=%u ble_floor=%d engines=0x%08lx\n",
+             g_cfgLoaded ? "USER" : "defaults",
+             (unsigned)fyCfgChirpMin(&g_cfg, g_cfgLoaded),
+             (int)fyCfgRssiFloor(&g_cfg, g_cfgLoaded),
+             (unsigned long)fyCfgEngines(&g_cfg, g_cfgLoaded));
   dualPrintf("[flockyou] mode=%s dwell_ms=%u start_ch=%u rssi_min=%d spiffs=%d"
 #if defined(ENABLE_BLE_SCAN) && ENABLE_BLE_SCAN
   #if defined(BLE_COEX_MODE) && BLE_COEX_MODE

@@ -103,6 +103,11 @@ static uint8_t       mb_vibPattern  = 0;      // 0=idle 1=high(3x strong) 2=prob
 static uint8_t       mb_vibStep     = 0;      // pulse index within the pattern
 static bool          mb_vibOn       = false;  // true while motor is currently energised
 static unsigned long mb_vibNextMs   = 0;      // millis() timestamp of next state change
+
+// Defined further down with the tick; declared here because the alert screen
+// (m5basicDetection, above the tick's definition) needs it when the user has
+// disabled vibration and a pattern must be cancelled rather than stepped.
+static void m5basicVibrationStop();
 #endif
 
 // ── Serial-mirror log strip ───────────────────────────────────────────────────
@@ -371,7 +376,14 @@ static void m5basicInit() {
     // M5Unified's internal touch-button height defaults to 0 and touches in
     // the [A][B][C] bar never register as button presses at all.
 #if defined(USE_M5CORE2_AWS)
-    for (int i=0;i<3;i++){M5.Power.setVibration(200);delay(120);M5.Power.setVibration(0);delay(80);}
+    // The 3 startup pulses confirm the motor works, but a user who turned
+    // vibration OFF in the flasher should not be buzzed on every boot — the
+    // config is loaded at the very top of setup() precisely so this can honour
+    // it. M5.setTouchButtonHeight() is unrelated to the motor and must always
+    // run, or the touchscreen [A][B][C] bar stops registering taps entirely.
+    if (fyCfgOutputEnabled(&g_cfg, g_cfgLoaded, FYCFG_FLAG_VIBRATE)) {
+        for (int i=0;i<3;i++){M5.Power.setVibration(200);delay(120);M5.Power.setVibration(0);delay(80);}
+    }
     M5.setTouchButtonHeight(MB_BTN_H);
 #endif
 
@@ -676,10 +688,16 @@ static void m5basicDetection(const char* method, const char* mac,
     // millis() timing instead of delay(), so this never blocks button
     // polling, screen redraws, or WiFi channel hopping.
 #if defined(USE_M5CORE2_AWS)
-    if (confidence >= 60) {
-        mb_vibPattern = 1; mb_vibStep = 0; mb_vibOn = false; mb_vibNextMs = millis();
-    } else if (confidence >= 30) {
-        mb_vibPattern = 2; mb_vibStep = 0; mb_vibOn = false; mb_vibNextMs = millis();
+    // Only arm the pattern when the user wants vibration; if they have disabled
+    // it, make sure a previously-armed pattern cannot leave the motor running.
+    if (fyCfgOutputEnabled(&g_cfg, g_cfgLoaded, FYCFG_FLAG_VIBRATE)) {
+        if (confidence >= 60) {
+            mb_vibPattern = 1; mb_vibStep = 0; mb_vibOn = false; mb_vibNextMs = millis();
+        } else if (confidence >= 30) {
+            mb_vibPattern = 2; mb_vibStep = 0; mb_vibOn = false; mb_vibNextMs = millis();
+        }
+    } else {
+        m5basicVibrationStop();
     }
 #endif
 }
@@ -709,6 +727,20 @@ static int m5basicButtonTick() {
 // Call every loop() iteration (Core2 only). Steps the vibration pattern set
 // by m5basicDetection() using millis()-based timing instead of delay(), so
 // the rest of loop() (buttons, screen, WiFi) never blocks.
+//
+// If the user disabled vibration (FYCFG_FLAG_VIBRATE), the caller uses
+// m5basicVibrationStop() instead of this. That is NOT equivalent to simply not
+// calling the tick: this function is what turns the motor OFF at the end of a
+// pulse, so skipping it while a pulse was in flight would leave the motor
+// running indefinitely — a stuck vibrator, which is the same class of defect as
+// the stuck-red LEDs this project has already been bitten by three times.
+static void m5basicVibrationStop() {
+    mb_vibPattern = 0;
+    mb_vibStep    = 0;
+    mb_vibOn      = false;
+    M5.Power.setVibration(0);
+}
+
 static void m5basicVibrationTick() {
     if (mb_vibPattern == 0) return;
     unsigned long now = millis();

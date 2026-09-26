@@ -321,7 +321,15 @@ static void uiTaskFn(void* pv) {
             if (btn == 1 || btn == 3) uiSetButtonAction((uint8_t)btn);
         }
 #if defined(USE_M5CORE2_AWS)
-        m5basicVibrationTick();
+        // Honour the user's VIBRATE choice (ADR-0001). m5basicVibrationTick()
+        // only *steps* a pattern that m5basicAlert() armed, so gating here is
+        // enough to silence the motor without leaving a pattern half-played —
+        // and it cannot block, which is why this is a tick rather than a delay.
+        if (fyCfgOutputEnabled(&g_cfg, g_cfgLoaded, FYCFG_FLAG_VIBRATE)) {
+            m5basicVibrationTick();
+        } else {
+            m5basicVibrationStop();
+        }
 #endif
         {
             uint8_t req = uiTakeAudioRequest();

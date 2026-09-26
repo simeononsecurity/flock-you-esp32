@@ -3,3 +3,9 @@ nvs,      data, nvs,     0x9000,   0x5000,
 otadata,  data, ota,     0xe000,   0x2000,
 app0,     app,  ota_0,   0x10000,  0x2E0000,
 spiffs,   data, spiffs,  0x2F0000, 0x100000,
+# User configuration written by the web flasher (ADR-0001): magic/version/CRC32
+# wrapped struct, see fy_config.h. Placed in the 64 KB that was already
+# unallocated at the end of the 4 MB layout, so NO existing offset moves and
+# spiffs keeps its full size. A device flashed without this partition, or with
+# it erased, reads "no user config" and uses the compile-time defaults.
+fycfg,    data, 0x40,    0x3F0000, 0x1000,

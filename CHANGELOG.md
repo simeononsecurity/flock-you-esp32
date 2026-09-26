@@ -16,6 +16,25 @@ blocking calls disguised as async). A future reader should be able to tell
 
 ### Added
 
+- **Web-flasher configurator** (ADR-0001): before flashing, choose which
+  detections this device watches for, which outputs it uses (light, sound,
+  vibration — only the ones the selected board actually has), and two bounded
+  sensitivity settings (alert threshold, Bluetooth proximity floor). Everything
+  defaults to the current behaviour, so leaving it alone changes nothing.
+  - Stored in a new `fycfg` partition written by the flasher, in a
+    magic/version/CRC32-wrapped struct (`fy_config.h`). Erased or corrupt config
+    means "no user configuration" and falls back to the compile-time defaults.
+  - Detections are gated at `enqueueAlert()` — the single funnel — so a disabled
+    engine is off for logging, dashboard, CSV and alerts alike, and a future
+    engine cannot forget to honour the setting. Suppressions are counted as
+    `cfgskip=` in the stats line, so "you turned this off" is distinguishable
+    from "the firmware never saw it".
+  - Sensitivity can only be made *quieter*, never louder: the configured
+    threshold is applied on top of the compile-time floor, because that floor is
+    what keeps shared-manufacturer hardware from alerting (see the three
+    stuck-red fixes below).
+  - The config loads before display init, so even the Core2 startup vibration
+    honours a "no vibration" choice.
 - **Firmware-derived signature set** (Flock Safety ALPR camera dump: Qualcomm
   MSM8953 + QCA9377, Android 8.1 "hpnotiq", 2026-09-16), kept as a **union**
   with the community OUI list rather than a replacement — the two sets target

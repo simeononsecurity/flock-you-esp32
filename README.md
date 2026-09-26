@@ -17,6 +17,12 @@ Ported to standard ESP32 hardware for maximum accessibility and cost savings.
 - **[Changelog](CHANGELOG.md)** - What changed and why, including the root cause of each fix
 - **[Design decisions](docs/adr/)** - Why the firmware is built the way it is, and what was rejected
 
+> **Configure it before you flash.** The [web flasher](docs/index.html) lets you choose
+> which detections this device watches for, which of its own alerts it uses (light, sound,
+> vibration — only what that board actually has), and two sensitivity settings. It all
+> defaults to standard behaviour, so doing nothing changes nothing. See
+> [ADR-0001](docs/adr/0001-config-partition-and-flasher-configurator.md) for how it works.
+
 ---
 
 ## ✨ What's Included
