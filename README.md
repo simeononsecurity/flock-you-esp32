@@ -14,6 +14,8 @@ Ported to standard ESP32 hardware for maximum accessibility and cost savings.
 - **[Solderless Build Guide](SOLDERLESS_BUILD_GUIDE.md)** - No soldering required! ($9-11 total)
 - **[PCB Design Package](hardware/pcb/README.md)** - Custom board: schematic, BOM, assembly
 - **[Detection Methods](.clinerules/04-detection-methods.md)** - Every detection path, with scoring and test tooling
+- **[Changelog](CHANGELOG.md)** - What changed and why, including the root cause of each fix
+- **[Design decisions](docs/adr/)** - Why the firmware is built the way it is, and what was rejected
 
 ---
 

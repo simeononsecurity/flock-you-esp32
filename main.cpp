@@ -1750,6 +1750,19 @@ static void fyPromotePrevSession() {
 // FLASK-COMPATIBLE JSON EMISSION
 // ============================================================
 // Now includes "confidence":%u and "protocol" is band-aware.
+//
+// ── Wire schema version (ADR-0002, docs/adr/0002-serial-schema-versioning.md) ─
+// The serial stream is an API, not just a log: api/flockyou.py parses these
+// lines, users capture them, and the beacon tester/self-test builds mirror the
+// same field names. Without a version a consumer cannot tell what it is reading,
+// and a shape change breaks it silently — which has already happened three times
+// here (SSID lines, padded OUI lines, and the Raven UUID line's single space,
+// all of which returned None and simply never appeared on the dashboard).
+//
+// BUMP THIS whenever an EXISTING field changes name, disappears, or changes what
+// its value means. Adding a new optional field does not require a bump. Record
+// the bump in CHANGELOG.md.
+#define FY_WIRE_SCHEMA 1
 
 static void emitDetectionJSON(const char* mac, const char* method,
                                int8_t rssi, uint8_t ch, const char* ssid,
@@ -1778,7 +1791,8 @@ static void emitDetectionJSON(const char* mac, const char* method,
   bool isBle = (strncmp(method, "ble_", 4) == 0);
 
   dualPrintf(
-      "{\"event\":\"detection\","
+      "{\"schema\":%u,"
+      "\"event\":\"detection\","
       "\"detection_method\":\"%s%s\","
       "\"protocol\":\"%s\","
       "\"mac_address\":\"%s\","
@@ -1789,6 +1803,7 @@ static void emitDetectionJSON(const char* mac, const char* method,
       "\"frequency\":%u,"
       "\"ssid\":\"%s\","
       "\"confidence\":%u}\n",
+      (unsigned)FY_WIRE_SCHEMA,
       isBle ? "" : "wifi_", method,
       isBle ? "ble" : channelBand(ch),
       mac, isBle ? "n/a" : ouiStr, nameEsc, rssi,
@@ -2548,6 +2563,10 @@ void setup() {
 #endif
 
   dualPrintln("[flockyou] v2 WiFi detector started");
+  // schema= identifies the wire format of this unit's JSON output (ADR-0002).
+  // Printed in the banner so support can tell what a unit speaks from a pasted
+  // boot log, before any detection has occurred.
+  dualPrintf("[flockyou] wire schema=%u\n", (unsigned)FY_WIRE_SCHEMA);
   dualPrintf("[flockyou] mode=%s dwell_ms=%u start_ch=%u rssi_min=%d spiffs=%d"
 #if defined(ENABLE_BLE_SCAN) && ENABLE_BLE_SCAN
   #if defined(BLE_COEX_MODE) && BLE_COEX_MODE

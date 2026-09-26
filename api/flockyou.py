@@ -18,6 +18,32 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'flockyou_dev_key_2024')
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading', logger=True, engineio_logger=True)
 
+# ---------------------------------------------------------------------------
+# Wire schema (ADR-0002, docs/adr/0002-serial-schema-versioning.md)
+# ---------------------------------------------------------------------------
+# The firmware stamps every detection JSON with {"schema":N} and prints
+# "wire schema=N" in its boot banner. Bump WIRE_SCHEMA_UNDERSTOOD here when this
+# API learns to handle a newer firmware format; a device speaking something
+# newer than this warns once rather than silently half-recording detections.
+WIRE_SCHEMA_UNDERSTOOD = 1
+_schema_warned = False
+
+
+def note_wire_schema(data) -> None:
+    """Warn once if a unit speaks a newer wire format than this API understands.
+
+    Deliberately a warning and not an error: unknown *added* fields are harmless
+    (json.loads ignores them), and refusing to record anything would turn a
+    version skew into a total data loss — which is the failure mode this whole
+    ADR exists to prevent.
+    """
+    global _schema_warned
+    schema = data.get('schema') if isinstance(data, dict) else None
+    if isinstance(schema, int) and schema > WIRE_SCHEMA_UNDERSTOOD and not _schema_warned:
+        _schema_warned = True
+        print(f"WARNING: device speaks wire schema {schema}; this API understands "
+              f"{WIRE_SCHEMA_UNDERSTOOD}. Unknown fields will be ignored — update the API.")
+
 # Global variables
 detections = []
 cumulative_detections = []
@@ -501,6 +527,9 @@ def flock_reader():
                             # Try to parse as detection data
                             try:
                                 data = json.loads(line)
+                                # Wire schema check (ADR-0002): warns once if the
+                                # device speaks a newer format than this API.
+                                note_wire_schema(data)
                                 if data.get('event') == 'detection' or 'detection_method' in data:
                                     # Normalize protocol: "wifi_2_4ghz"/"wifi_5ghz" → "wifi"
                                     proto = data.get('protocol', '')
