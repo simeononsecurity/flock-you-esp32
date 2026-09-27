@@ -38,8 +38,15 @@
 // Output enables (flags).
 #define FYCFG_FLAG_LED        (1u << 0)   // status LED / screen flashes on alerts
 #define FYCFG_FLAG_CHIRP      (1u << 1)   // audible alert tones
-#define FYCFG_FLAG_HOLD       (1u << 2)   // hold a critical alert on the display
 #define FYCFG_FLAG_VIBRATE    (1u << 3)   // vibration motor (M5Stack Core2 only)
+// Bit 2 is RESERVED — NOT IMPLEMENTED. A "hold the alert on screen" toggle was
+// scoped but is wired to no behaviour in this firmware, so the flasher does not
+// offer it. It stays defined (and is accepted on decode, for layout compatibility
+// with the sibling project's config) but is deliberately EXCLUDED from
+// ALL_OUTPUTS so it cannot be reported as an enabled output anywhere. A switch
+// that does nothing is worse than no switch — the same reasoning that removed the
+// "Total events" counter and the untested 3D case.
+#define FYCFG_FLAG_HOLD_RESERVED (1u << 2)
 // bits 4..15 reserved
 //
 // Not every board has every output — the Atom Lite has no sound hardware at all,
@@ -48,7 +55,7 @@
 // docs/index.html); these bits are still accepted on boards that lack the
 // hardware, where they simply have no effect.
 #define FYCFG_FLAG_ALL_OUTPUTS (FYCFG_FLAG_LED | FYCFG_FLAG_CHIRP | \
-                                FYCFG_FLAG_HOLD | FYCFG_FLAG_VIBRATE)
+                                FYCFG_FLAG_VIBRATE)
 
 // Defaults = today's behaviour. These are the single source of truth for "what
 // the firmware does when the user changes nothing" — the config layer may only

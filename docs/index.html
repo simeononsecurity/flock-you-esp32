@@ -609,8 +609,10 @@ const CFG = {
   total:   64,
   crcOff:  60,
   offset:  0x3F0000,     // must match the `fycfg` partition in partitions_4mb.csv
-  flags: { LED:1<<0, CHIRP:1<<1, HOLD:1<<2, VIBRATE:1<<3 },
-  allOutputs: (1<<0)|(1<<1)|(1<<2)|(1<<3),
+  flags: { LED:1<<0, CHIRP:1<<1, VIBRATE:1<<3 },
+  // Bit 2 is RESERVED (a display-hold toggle that the firmware does not implement
+  // yet) and is deliberately not listed here, so it can never be sent as an
+  // enabled output. Kept out of the UI for the same reason — see fy_config.h.
   chirpMin: 30,          // must match FYCFG_DEFAULT_CHIRP_MIN
   rssiFloor: -100,       // must match FYCFG_DEFAULT_RSSI_FLOOR
 };
@@ -656,7 +658,8 @@ const BOARD_CAPS = {
 };
 
 let selectedManifest = 'manifest-esp32dev-ble.json';
-let cfgObjectUrl = null;   // revoked before each rebuild so blob URLs do not leak
+let cfgObjectUrl = null;   // patched-manifest URL; revoked before each rebuild
+let cfgPartUrl   = null;   // config-blob URL; same — see applyManifest()
 
 // CRC-32 (IEEE 802.3, reflected) — the same bitwise algorithm as fyCfgCrc32()
 // rather than a table, so the two are comparable by eye.
@@ -705,28 +708,23 @@ async function tryOpenPort(port,opts={baudRate:115200}){
 // "customise" ticked but nothing touched still produces exactly standard behaviour.
 function cfgFromUi(){
   const allOn = ENGINE_GROUPS.reduce((m,g)=>m | g.bits.reduce((x,b)=>x|(1<<b),0), 0);
-  const engines = document.getElementById('cfg-custom').checked
-    ? ENGINE_GROUPS.reduce((m,g)=>{
+  const engines = ENGINE_GROUPS.reduce((m,g)=>{
         const el = document.getElementById('cfg-eng-'+g.key);
         return (el && el.checked) ? (m | g.bits.reduce((x,b)=>x|(1<<b),0)) : m;
-      }, 0)
-    : allOn;
-  const caps = BOARD_CAPS[boardIdFromManifest(selectedManifest)] || {};
+      }, 0);
+  // Outputs: a toggle that is not present means the board lacks that hardware, so
+  // the bit stays off (harmless either way, but "off" is the honest value). A
+  // present toggle is trusted as-is.
+  const on = (id)=>{ const el = document.getElementById('cfg-out-'+id); return el ? el.checked : false; };
   let flags = 0;
-  if (document.getElementById('cfg-out-chirp') && document.getElementById('cfg-out-chirp').checked) flags |= CFG.flags.CHIRP;
-  if (document.getElementById('cfg-out-led')   && document.getElementById('cfg-out-led').checked)   flags |= CFG.flags.LED;
-  if (document.getElementById('cfg-out-vib')   && document.getElementById('cfg-out-vib').checked)   flags |= CFG.flags.VIBRATE;
-  if (!document.getElementById('cfg-out-chirp') && !caps.sound)   {} // board has no sound: leave the bit off
-  else if (!document.getElementById('cfg-out-chirp'))              flags |= CFG.flags.CHIRP;
-  if (!document.getElementById('cfg-out-led') && !caps.led)        {}
-  else if (!document.getElementById('cfg-out-led'))                flags |= CFG.flags.LED;
-  if (!document.getElementById('cfg-out-vib') && !caps.vibrate)    {}
-  else if (!document.getElementById('cfg-out-vib'))                flags |= CFG.flags.VIBRATE;
+  if (on('chirp')) flags |= CFG.flags.CHIRP;
+  if (on('led'))   flags |= CFG.flags.LED;
+  if (on('vib'))   flags |= CFG.flags.VIBRATE;
   const thr = document.getElementById('cfg-threshold');
   const flo = document.getElementById('cfg-rssi');
   return {
     engines,
-    flags: document.getElementById('cfg-custom').checked ? flags : CFG.allOutputs,
+    flags,
     chirpMin:  thr ? parseInt(thr.value, 10) : CFG.chirpMin,
     rssiFloor: flo ? parseInt(flo.value, 10) : CFG.rssiFloor,
   };
@@ -737,6 +735,13 @@ function boardIdFromManifest(m){
 }
 
 // Build (or rebuild) the config UI for the selected board.
+//
+// NOTE on listeners: this runs on every board/variant change, and the containers
+// it fills are REUSED (their innerHTML is replaced, not the elements themselves).
+// Attaching a 'change' listener here would therefore stack a new one on every
+// render, so a single change would fire that many manifest rebuilds. The wiring is
+// done ONCE at page load instead, delegating from a container that never gets
+// replaced (see wireConfigEvents()).
 function renderConfig(){
   const env  = boardIdFromManifest(selectedManifest);
   const caps = BOARD_CAPS[env] || { sound:false, led:false, vibrate:false };
@@ -765,26 +770,48 @@ function renderConfig(){
     [45, 'High confidence only'],
     [60, 'Certain matches only — quietest'],
   ].map(([v,l])=>`<option value="${v}">${l}</option>`).join('');
-  const flo = document.getElementById('cfg-rssi');
-  flo.innerHTML = [
-    [-100, 'Nothing (maximum range)'],
-    [-95,  'Very weak signals'],
-    [-90,  'Weak signals'],
-    [-80,  'Only nearby devices'],
-  ].map(([v,l])=>`<option value="${v}">${l}</option>`).join('');
 
-  // Re-render resets ticks, so restore the current state before wiring events.
-  ['cfg-engines','cfg-outputs','cfg-threshold','cfg-rssi'].forEach(id=>{
-    document.getElementById(id).addEventListener('change', applyManifest);
-  });
-  document.getElementById('cfg-custom').onchange = (e)=>{
-    document.getElementById('cfg-body').style.display = e.target.checked ? 'block' : 'none';
-    applyManifest();
-  };
   document.getElementById('cfg-body').style.display =
     document.getElementById('cfg-custom').checked ? 'block' : 'none';
+  updateEngineSummary();
   applyManifest();
 }
+
+// Live "N of M groups enabled" note. Cheap, but it is the only thing that tells a
+// user at a glance that they have quietly switched most of the device off.
+function updateEngineSummary(){
+  const note = document.getElementById('cfg-engines-note');
+  if (!note) return;
+  if (!document.getElementById('cfg-custom').checked) {
+    note.textContent = 'All detections enabled (standard behaviour).';
+    return;
+  }
+  let on = 0;
+  ENGINE_GROUPS.forEach(g=>{
+    const el = document.getElementById('cfg-eng-' + g.key);
+    if (el && el.checked) on++;
+  });
+  note.textContent = on + ' of ' + ENGINE_GROUPS.length + ' detection groups enabled.'
+    + (on === 0 ? ' This device will detect nothing at all.' : '');
+}
+
+// Wire the config controls ONCE. Delegated from #step4, whose element is never
+// replaced (only its children are), so re-rendering the panel cannot stack
+// duplicate listeners — see the note on renderConfig().
+function wireConfigEvents(){
+  const step4 = document.getElementById('step4');
+  if (!step4) return;
+  step4.addEventListener('change', (e)=>{
+    if (e.target && e.target.id === 'cfg-custom') {
+      document.getElementById('cfg-body').style.display = e.target.checked ? 'block' : 'none';
+    }
+    if (e.target && e.target.id && e.target.id.indexOf('cfg-') === 0) {
+      updateEngineSummary();
+      applyManifest();
+    }
+  });
+}
+wireConfigEvents();
 
 // Patch the config part into the manifest and point the install button at it.
 async function applyManifest(){
@@ -794,11 +821,13 @@ async function applyManifest(){
   try{
     const base = await (await fetch(selectedManifest)).json();
     const manifest = Object.assign({}, base);
-    manifest.parts = (base.parts || []).concat([{
-      path: URL.createObjectURL(new Blob([bytes], {type:'application/octet-stream'})),
-      offset: CFG.offset,
-    }]);
-    if (cfgObjectUrl) URL.revokeObjectURL(cfgObjectUrl);
+    // Revoke the PREVIOUS part + manifest URLs: applyManifest runs on every
+    // control change, and each call would otherwise leak a pair of blob URLs for
+    // the lifetime of the page.
+    if (cfgPartUrl)    URL.revokeObjectURL(cfgPartUrl);
+    if (cfgObjectUrl)  URL.revokeObjectURL(cfgObjectUrl);
+    cfgPartUrl = URL.createObjectURL(new Blob([bytes], {type:'application/octet-stream'}));
+    manifest.parts = (base.parts || []).concat([{ path: cfgPartUrl, offset: CFG.offset }]);
     cfgObjectUrl = URL.createObjectURL(new Blob([JSON.stringify(manifest)], {type:'application/json'}));
     document.getElementById('install-btn').setAttribute('manifest', cfgObjectUrl);
     const note = document.getElementById('cfg-parts-note');
