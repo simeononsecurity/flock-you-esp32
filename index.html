@@ -48,6 +48,25 @@
     .step-title{font-weight:700;font-size:1rem;margin-bottom:.5rem;color:var(--text)}
     .step-desc{font-size:.88rem;color:var(--muted);line-height:1.6;margin-bottom:.75rem}
 
+    /* ── Device configuration (ADR-0001) ── */
+    .cfg-master{display:flex;align-items:center;gap:.5rem;font-size:.92rem;
+                font-weight:600;margin:.6rem 0 1rem;cursor:pointer}
+    .cfg-section{margin:1rem 0;padding:.85rem 1rem;border:1px solid rgba(255,255,255,.09);
+                 border-radius:10px;background:rgba(255,255,255,.02)}
+    .cfg-h{font-size:.82rem;font-weight:700;letter-spacing:.04em;text-transform:uppercase;
+           color:var(--muted);margin-bottom:.7rem}
+    .cfg-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:.6rem}
+    .cfg-item{display:flex;gap:.55rem;align-items:flex-start;font-size:.84rem;line-height:1.45;
+              cursor:pointer;padding:.4rem .5rem;border-radius:8px}
+    .cfg-item:hover{background:rgba(255,255,255,.04)}
+    .cfg-item input{margin-top:.15rem;flex:0 0 auto}
+    .cfg-sub{color:var(--muted);font-size:.78rem}
+    .cfg-note{font-size:.78rem;color:var(--muted);line-height:1.5;margin-top:.6rem}
+    .cfg-row{display:flex;justify-content:space-between;align-items:center;gap:1rem;
+             font-size:.85rem;margin:.55rem 0}
+    .cfg-row select{background:#0d1117;color:var(--fg,#e6edf3);border:1px solid rgba(255,255,255,.15);
+                    border-radius:8px;padding:.35rem .5rem;font-size:.82rem;max-width:22rem}
+
     /* board grid */
     .board-grid{display:grid;grid-template-columns:1fr 1fr;gap:.6rem}
     @media(max-width:480px){.board-grid{grid-template-columns:1fr}}
@@ -256,13 +275,65 @@
     </div>
   </div>
 
-  <!-- Step 4: Flash -->
+  <!-- Step 4: Configuration (optional — defaults to the current behaviour) -->
   <div class="wizard-step" id="step4">
     <div class="step-num" id="sn4">4</div>
+    <div class="step-body">
+      <div class="step-title">Configuration <span style="font-weight:400;opacity:.7">(optional)</span></div>
+      <div class="step-desc">
+        Everything below defaults to the firmware's standard behaviour — leave it alone and
+        nothing changes. Anything you do change is written to the device's config partition
+        <em>as well as</em> the firmware, and only the options this board can actually honour
+        are shown.
+      </div>
+
+      <label class="cfg-master">
+        <input type="checkbox" id="cfg-custom"> Customise what this device detects and how it alerts
+      </label>
+
+      <div id="cfg-body" style="display:none">
+        <div class="cfg-section">
+          <div class="cfg-h">Detections to watch for</div>
+          <div class="cfg-grid" id="cfg-engines"></div>
+          <div class="cfg-note" id="cfg-engines-note"></div>
+        </div>
+
+        <div class="cfg-section">
+          <div class="cfg-h">Alerts this device can make</div>
+          <div class="cfg-grid" id="cfg-outputs"></div>
+          <div class="cfg-note">
+            Turning an output off only silences <em>this device</em> — detections are still
+            recorded and still sent to the dashboard.
+          </div>
+        </div>
+
+        <div class="cfg-section">
+          <div class="cfg-h">Sensitivity</div>
+          <div class="cfg-row">
+            <label for="cfg-threshold">How confident before it alerts</label>
+            <select id="cfg-threshold"></select>
+          </div>
+          <div class="cfg-note">
+            "High confidence only" makes the device quieter — it can never make it alert on
+            equipment that shares a manufacturer with Flock gear but is not a camera.
+          </div>
+          <div class="cfg-row">
+            <label for="cfg-rssi">Ignore Bluetooth devices weaker than</label>
+            <select id="cfg-rssi"></select>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Step 5: Flash -->
+  <div class="wizard-step" id="step5">
+    <div class="step-num" id="sn5">5</div>
     <div class="step-body">
       <div class="step-title">Flash Firmware</div>
       <div class="step-desc">Click <strong>Install</strong>, select your device's serial port, and wait ~60 s for flashing to complete.</div>
       <div class="flash-action">
+        <p class="cfg-note" id="cfg-parts-note"></p>
         <esp-web-install-button id="install-btn" manifest="manifest-esp32dev-ble.json"></esp-web-install-button>
         <button class="btn-serial" onclick="openSerial()">
           <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M6 3.5A1.5 1.5 0 017.5 2h1A1.5 1.5 0 0110 3.5v1A1.5 1.5 0 018.5 6v1H11a.5.5 0 01.5.5v1a.5.5 0 01-1 0V8H8.5v.5a.5.5 0 01-1 0V8H5.5v.5a.5.5 0 01-1 0v-1A.5.5 0 015 7h2.5V6A1.5 1.5 0 016 4.5v-1z"/><path d="M3.5 6.5A.5.5 0 014 7h1v1H4a.5.5 0 010-1zm8 0a.5.5 0 01.5.5v1h-1V7a.5.5 0 01.5-.5z"/></svg>
@@ -502,11 +573,123 @@ function renderFirmwareVariants(boardId){
 function selectFirmwareVariant(el, manifest){
   document.querySelectorAll('#fw-variant-grid .board-btn').forEach(b=>b.classList.remove('selected'));
   el.classList.add('selected');
-  document.getElementById('install-btn').setAttribute('manifest', manifest);
+  selectedManifest = manifest;
+  // Reveal the configuration step and the flash step together. Configuration is
+  // optional and pre-filled with the firmware's defaults, so a user who does not
+  // care can go straight to Install.
   document.getElementById('step3').classList.remove('active-step');
   document.getElementById('step4').classList.add('active-step');
+  document.getElementById('step5').classList.add('active-step');
   document.getElementById('sn3').classList.add('done');
+  renderConfig();
+  applyManifest();
 }
+// ─────────────────────────────────────────────────────────────────────────────
+// Device configuration (ADR-0001, docs/adr/0001-config-partition-and-flasher-configurator.md)
+//
+// The firmware reads a 64-byte blob from its `fycfg` partition. We build those
+// bytes here and hand them to ESP Web Tools as an extra manifest "part", which
+// is how a config reaches the device with no server, no rebuild, and no
+// pre-built firmware per combination.
+//
+// THE LAYOUT BELOW IS A CROSS-LANGUAGE CONTRACT — it must match fy_config.h byte
+// for byte. It is verified by test/test_config/ on the host, which asserts the
+// same offsets, the same magic, and the same standard IEEE CRC-32 check value
+// (0xCBF43926 for "123456789"). Change one side, change both, re-run
+// `pio test -e native`.
+//
+// Note what is deliberately NOT here: no free-form score weighting. The scoring
+// tiers are load-bearing — a flat bonus applied to the shared-manufacturer tier
+// is what made status LEDs appear stuck red three separate times — so sensitivity
+// is a bounded choice of threshold, and the firmware clamps it regardless.
+// ─────────────────────────────────────────────────────────────────────────────
+const CFG = {
+  magic:   0x46435946,   // 'FYCF' in file order
+  version: 1,
+  total:   64,
+  crcOff:  60,
+  offset:  0x3F0000,     // must match the `fycfg` partition in partitions_4mb.csv
+  flags: { LED:1<<0, CHIRP:1<<1, HOLD:1<<2, VIBRATE:1<<3 },
+  allOutputs: (1<<0)|(1<<1)|(1<<2)|(1<<3),
+  chirpMin: 30,          // must match FYCFG_DEFAULT_CHIRP_MIN
+  rssiFloor: -100,       // must match FYCFG_DEFAULT_RSSI_FLOOR
+};
+
+// Detections, grouped the way a user thinks about them. Each group maps to one
+// or more alert-type bits — and the bit index IS the AlertType enum value in
+// main.cpp, so these numbers are not arbitrary.
+const ENGINE_GROUPS = [
+  { key:'flockcam', label:'Flock cameras (Wi-Fi)', bits:[0,4,12],
+    desc:'Transmitter recognised as Flock gear, a wildcard probe from one, or an unprovisioned camera.' },
+  { key:'flockssid', label:'Flock (by network name)', bits:[3,5],
+    desc:'Networks named like a Flock device, including ones using randomised hardware addresses.' },
+  { key:'mfr', label:'Shared-manufacturer Wi-Fi gear', bits:[6],
+    desc:'Built by a Flock contractor, but the same parts ship in unrelated devices — recorded quietly, never alerts alone.' },
+  { key:'alpr', label:'Other ALPR / plate-reader cameras', bits:[1,2],
+    desc:'Cameras from other vendors, matched on their network hardware.' },
+  { key:'sound', label:'Gunshot-detection sensors', bits:[7],
+    desc:'SoundThinking / ShotSpotter acoustic sensors, often installed alongside cameras.' },
+  { key:'bleflock', label:'Flock batteries & accessories (Bluetooth)', bits:[8,11],
+    desc:'Penguin battery packs, "FS Ext Battery", and Flock accessory services.' },
+  { key:'bleraven', label:'Raven cameras (Bluetooth)', bits:[9],
+    desc:'Named Raven services — the ones that expose GPS without authentication.' },
+  { key:'blerange', label:'Unidentified Raven-range devices', bits:[13],
+    desc:'Weak signal: an unnamed service inside the Raven block. Recorded, never alerts on its own.' },
+  { key:'blename', label:'Named Bluetooth devices', bits:[10],
+    desc:'Advertised device names matching known Flock/Raven naming.' },
+];
+
+// What each board can physically do. Only the toggles a board can honour are
+// shown — offering "sound" on a board with no speaker is the same mistake as
+// documenting a beep that was compiled out. MUST be kept in step with the board
+// blocks in main.cpp.
+const BOARD_CAPS = {
+  'esp32dev':           { sound:false, led:true,  vibrate:false },
+  'm5atom-lite':        { sound:false, led:true,  vibrate:false },  // NeoPixel only
+  'm5atom-echo':        { sound:true,  led:false, vibrate:false },  // buzzer, no LED
+  'm5atom-voice':       { sound:true,  led:true,  vibrate:false },
+  'm5atom-voices3r':    { sound:true,  led:false, vibrate:false },  // speaker, no LED
+  'm5stack-basic':      { sound:true,  led:false, vibrate:false },  // screen, no NeoPixel
+  'm5stack-core2-aws':  { sound:true,  led:false, vibrate:true  },  // the only motor
+  'm5stickc-plus-se':   { sound:true,  led:false, vibrate:false },  // buzzer + screen
+  'lilygo-t-dongle-c5': { sound:false, led:true,  vibrate:false },  // RGB LED via display
+};
+
+let selectedManifest = 'manifest-esp32dev-ble.json';
+let cfgObjectUrl = null;   // revoked before each rebuild so blob URLs do not leak
+
+// CRC-32 (IEEE 802.3, reflected) — the same bitwise algorithm as fyCfgCrc32()
+// rather than a table, so the two are comparable by eye.
+function cfgCrc32(bytes){
+  let crc = 0xFFFFFFFF;
+  for (let i = 0; i < bytes.length; i++) {
+    crc ^= bytes[i];
+    for (let b = 0; b < 8; b++) {
+      crc = (crc & 1) ? ((crc >>> 1) ^ 0xEDB88320) : (crc >>> 1);
+    }
+  }
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+
+function cfgEncode(c){
+  const b = new Uint8Array(CFG.total);
+  const dv = new DataView(b.buffer);
+  dv.setUint32(0, CFG.magic, true);
+  b[4] = CFG.version;
+  dv.setUint16(6, c.flags, true);
+  dv.setUint32(8, c.engines >>> 0, true);
+  b[12] = c.chirpMin;
+  dv.setInt8(13, c.rssiFloor);
+  dv.setUint32(CFG.crcOff, cfgCrc32(b.subarray(0, CFG.crcOff)), true);  // 14..59 stay zero
+  return b;
+}
+
+// An erased blob means "no user configuration" = the firmware's defaults. Written
+// whenever the user has NOT customised, so a flash always leaves the device in
+// the state the UI showed — otherwise a previously-flashed custom config would
+// silently survive and this page would be lying about what the device will do.
+function cfgErased(){ return new Uint8Array(CFG.total).fill(0xFF); }
+
 
 // Populate step 3 for the default board (Generic ESP32 DevKit) on page load,
 // since the wizard steps are all visible at once (not a modal flow).
@@ -518,6 +701,118 @@ renderFirmwareVariants('esp32dev');
 // asserted on open, causing the first open attempt to fail.  Retry once after
 // a short wait to let the device finish re-enumeration.
 async function tryOpenPort(port,opts={baudRate:115200}){
+// Current UI state → config struct. Defaults are the firmware's own defaults, so
+// "customise" ticked but nothing touched still produces exactly standard behaviour.
+function cfgFromUi(){
+  const allOn = ENGINE_GROUPS.reduce((m,g)=>m | g.bits.reduce((x,b)=>x|(1<<b),0), 0);
+  const engines = document.getElementById('cfg-custom').checked
+    ? ENGINE_GROUPS.reduce((m,g)=>{
+        const el = document.getElementById('cfg-eng-'+g.key);
+        return (el && el.checked) ? (m | g.bits.reduce((x,b)=>x|(1<<b),0)) : m;
+      }, 0)
+    : allOn;
+  const caps = BOARD_CAPS[boardIdFromManifest(selectedManifest)] || {};
+  let flags = 0;
+  if (document.getElementById('cfg-out-chirp') && document.getElementById('cfg-out-chirp').checked) flags |= CFG.flags.CHIRP;
+  if (document.getElementById('cfg-out-led')   && document.getElementById('cfg-out-led').checked)   flags |= CFG.flags.LED;
+  if (document.getElementById('cfg-out-vib')   && document.getElementById('cfg-out-vib').checked)   flags |= CFG.flags.VIBRATE;
+  if (!document.getElementById('cfg-out-chirp') && !caps.sound)   {} // board has no sound: leave the bit off
+  else if (!document.getElementById('cfg-out-chirp'))              flags |= CFG.flags.CHIRP;
+  if (!document.getElementById('cfg-out-led') && !caps.led)        {}
+  else if (!document.getElementById('cfg-out-led'))                flags |= CFG.flags.LED;
+  if (!document.getElementById('cfg-out-vib') && !caps.vibrate)    {}
+  else if (!document.getElementById('cfg-out-vib'))                flags |= CFG.flags.VIBRATE;
+  const thr = document.getElementById('cfg-threshold');
+  const flo = document.getElementById('cfg-rssi');
+  return {
+    engines,
+    flags: document.getElementById('cfg-custom').checked ? flags : CFG.allOutputs,
+    chirpMin:  thr ? parseInt(thr.value, 10) : CFG.chirpMin,
+    rssiFloor: flo ? parseInt(flo.value, 10) : CFG.rssiFloor,
+  };
+}
+
+function boardIdFromManifest(m){
+  return (m || '').replace(/^manifest-/, '').replace(/\.json$/, '');
+}
+
+// Build (or rebuild) the config UI for the selected board.
+function renderConfig(){
+  const env  = boardIdFromManifest(selectedManifest);
+  const caps = BOARD_CAPS[env] || { sound:false, led:false, vibrate:false };
+
+  const eg = document.getElementById('cfg-engines');
+  eg.innerHTML = ENGINE_GROUPS.map(g=>
+    `<label class="cfg-item" title="${g.desc}">`+
+    `<input type="checkbox" id="cfg-eng-${g.key}" checked>`+
+    `<span><b>${g.label}</b><br><span class="cfg-sub">${g.desc}</span></span>`+
+    `</label>`).join('');
+
+  // Outputs: only what this board can actually do.
+  const outs = [];
+  if (caps.sound)   outs.push(['out-chirp','Sound (beeps)',   'Two rising beeps for an alert, one lower beep for a warning.']);
+  if (caps.led)     outs.push(['out-led',  'Light alerts',    'Flash the status light / screen on an alert.']);
+  if (caps.vibrate) outs.push(['out-vib',  'Vibration',       'Buzz on an alert.']);
+  document.getElementById('cfg-outputs').innerHTML = outs.length
+    ? outs.map(([id,label,desc])=>
+        `<label class="cfg-item"><input type="checkbox" id="cfg-${id}" checked>`+
+        `<span><b>${label}</b><br><span class="cfg-sub">${desc}</span></span></label>`).join('')
+    : '<div class="cfg-sub">This board has no light, sound or vibration output — it only reports to the dashboard.</div>';
+
+  const thr = document.getElementById('cfg-threshold');
+  thr.innerHTML = [
+    [30, 'Default — alert on likely matches (recommended)'],
+    [45, 'High confidence only'],
+    [60, 'Certain matches only — quietest'],
+  ].map(([v,l])=>`<option value="${v}">${l}</option>`).join('');
+  const flo = document.getElementById('cfg-rssi');
+  flo.innerHTML = [
+    [-100, 'Nothing (maximum range)'],
+    [-95,  'Very weak signals'],
+    [-90,  'Weak signals'],
+    [-80,  'Only nearby devices'],
+  ].map(([v,l])=>`<option value="${v}">${l}</option>`).join('');
+
+  // Re-render resets ticks, so restore the current state before wiring events.
+  ['cfg-engines','cfg-outputs','cfg-threshold','cfg-rssi'].forEach(id=>{
+    document.getElementById(id).addEventListener('change', applyManifest);
+  });
+  document.getElementById('cfg-custom').onchange = (e)=>{
+    document.getElementById('cfg-body').style.display = e.target.checked ? 'block' : 'none';
+    applyManifest();
+  };
+  document.getElementById('cfg-body').style.display =
+    document.getElementById('cfg-custom').checked ? 'block' : 'none';
+  applyManifest();
+}
+
+// Patch the config part into the manifest and point the install button at it.
+async function applyManifest(){
+  const custom = document.getElementById('cfg-custom').checked;
+  const bytes  = custom ? cfgEncode(cfgFromUi()) : cfgErased();
+
+  try{
+    const base = await (await fetch(selectedManifest)).json();
+    const manifest = Object.assign({}, base);
+    manifest.parts = (base.parts || []).concat([{
+      path: URL.createObjectURL(new Blob([bytes], {type:'application/octet-stream'})),
+      offset: CFG.offset,
+    }]);
+    if (cfgObjectUrl) URL.revokeObjectURL(cfgObjectUrl);
+    cfgObjectUrl = URL.createObjectURL(new Blob([JSON.stringify(manifest)], {type:'application/json'}));
+    document.getElementById('install-btn').setAttribute('manifest', cfgObjectUrl);
+    const note = document.getElementById('cfg-parts-note');
+    if (note) note.textContent = custom
+      ? 'Your settings will be written to the device along with the firmware.'
+      : 'Standard behaviour: no custom settings will be written.';
+  }catch(err){
+    // Never leave the button unusable because the manifest could not be patched —
+    // fall back to the plain, unconfigured firmware.
+    console.error('config manifest patch failed:', err);
+    document.getElementById('install-btn').setAttribute('manifest', selectedManifest);
+  }
+}
+
   try{ await port.open(opts); }
   catch(e){
     if(e.name==='InvalidStateError'||e.name==='NetworkError'||
