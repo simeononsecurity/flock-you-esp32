@@ -704,6 +704,16 @@ renderFirmwareVariants('esp32dev');
 // asserted on open, causing the first open attempt to fail.  Retry once after
 // a short wait to let the device finish re-enumeration.
 async function tryOpenPort(port,opts={baudRate:115200}){
+
+  try{ await port.open(opts); }
+  catch(e){
+    if(e.name==='InvalidStateError'||e.name==='NetworkError'||
+       (e.message&&e.message.includes('Failed to open'))){
+      await new Promise(r=>setTimeout(r,1500));
+      await port.open(opts);
+    } else { throw e; }
+  }
+}
 // Current UI state → config struct. Defaults are the firmware's own defaults, so
 // "customise" ticked but nothing touched still produces exactly standard behaviour.
 function cfgFromUi(){
@@ -731,7 +741,14 @@ function cfgFromUi(){
 }
 
 function boardIdFromManifest(m){
-  return (m || '').replace(/^manifest-/, '').replace(/\.json$/, '');
+  // Manifests are named after the BUILD (e.g. manifest-m5stack-core2-aws-ble.json)
+  // but capabilities belong to the BOARD. Without stripping the variant suffixes,
+  // every "-ble" build — which is the default for most boards — misses BOARD_CAPS
+  // entirely and the page wrongly reports "this board has no light, sound or
+  // vibration output" with no output toggles at all.
+  let env = (m || '').replace(/^manifest-/, '').replace(/\.json$/, '');
+  for (let i = 0; i < 3; i++) env = env.replace(/-(ble|selftest|beacon)$/, '');
+  return env;
 }
 
 // Build (or rebuild) the config UI for the selected board.
@@ -842,15 +859,6 @@ async function applyManifest(){
   }
 }
 
-  try{ await port.open(opts); }
-  catch(e){
-    if(e.name==='InvalidStateError'||e.name==='NetworkError'||
-       (e.message&&e.message.includes('Failed to open'))){
-      await new Promise(r=>setTimeout(r,1500));
-      await port.open(opts);
-    } else { throw e; }
-  }
-}
 async function openSerial(){
   if(!('serial' in navigator)){alert('Web Serial requires Chrome or Edge on desktop.');return;}
   if(dashPort||dashRunning) await dashDisconnect();
