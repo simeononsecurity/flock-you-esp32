@@ -131,6 +131,36 @@ before considering any firmware change complete.
    mode), and print this exact unplug/replug instruction when no firmware
    output appears within their timeout.
 
+11. **The web flasher's inline script is code — check it like code.** `docs/index.html`
+   is a single large inline `<script>`, and two whole classes of bug shipped through
+   it because nothing executed it: a large block of new code was inserted **inside an
+   unrelated function** (`tryOpenPort`), so the config UI silently did nothing until
+   the user opened the serial monitor; and `BOARD_CAPS` was keyed on the *build*
+   name while lookups used the *manifest* name, so every `-ble` board — the default —
+   reported "no outputs available" and offered no toggles at all. Neither is visible
+   in review and neither breaks the build. Three cheap checks, all runnable in Node
+   with a ~20-line stub DOM (`document.getElementById` returning per-id stubs that
+   record `addEventListener` handlers):
+
+   - **Parse**: `new Function(script)` on each inline block — catches real syntax
+     errors (one duplicate `const` was caught this way).
+   - **Top-level placement**: after loading, assert the functions you expect are
+     `typeof … === 'function'` *at top level*, and that the listener is attached to
+     the expected element. A nested declaration is invisible from the top level, so
+     this is the check that catches the "inserted inside another function" mistake.
+   - **Interaction**: dispatch a synthetic `change` on the config checkbox and assert
+     the panel's `style.display` becomes `block`, then call `renderConfig()` and assert
+     the rows and selects actually got content.
+   - **Capability coverage**: iterate **every** `manifest-*.json` named anywhere in the
+     page, resolve it through `boardIdFromManifest()` + `BOARD_CAPS`, and fail if any
+     yields no entry — plus assert the engine bits are unique and < 32, since those
+     bits are a wire contract with the matching bit index in `fy_config.h`/
+     `es_config.h`.
+
+   Keep the flasher's blob builder verified against the C codec too: extract the JS,
+   emit a blob under Node, decode it with a host program including the real header,
+   and compare the CRC (the standard check value for `"123456789"` is `0xCBF43926`).
+
 ## Before committing
 
 - Re-run `git status`/`git diff --stat` and confirm every changed file is
