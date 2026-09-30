@@ -9,3 +9,18 @@ spiffs,   data, spiffs,  0x2F0000, 0x100000,
 # spiffs keeps its full size. A device flashed without this partition, or with
 # it erased, reads "no user config" and uses the compile-time defaults.
 fycfg,    data, 0x40,    0x3F0000, 0x1000,
+# Crash post-mortem (ESP-IDF coredump). Placed in the remaining free space after
+# fycfg, so NO existing offset moves and neither spiffs nor the config partition
+# shrinks (shrinking spiffs would risk a format — and therefore session data —
+# on the first boot after an update).
+#
+# This partition is what was actually missing, NOT an sdkconfig setting: the
+# Arduino core ships precompiled ESP-IDF libs built with
+# CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y (verified in the packaged
+# tools/sdk/esp32*/sdkconfig), which is why a device with no coredump partition
+# printed "No core dump partition found!" at every boot. See sdkconfig.defaults.
+#
+# A field unit reporting an unexplained hourly reboot left no evidence behind;
+# with this in place a panic is written to flash and can be retrieved later with
+# esptool, even on a unit that ran unattended.
+coredump, data, coredump,0x3F1000, 0xF000,

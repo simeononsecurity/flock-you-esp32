@@ -2371,9 +2371,50 @@ static void autosaveTick() {
 // SETUP / LOOP
 // ============================================================
 
+// ============================================================
+// BOOT DIAGNOSTICS
+// ============================================================
+// Why the last reboot happened. This exists because a field unit reported
+// rebooting roughly hourly and appearing to discard its session, and that
+// report was not actionable: "reboot" covers a firmware panic, an interrupt or
+// task watchdog reset, a brownout (power), and a deliberate software reset —
+// each with a completely different remedy. This firmware never issues a
+// software reset, so any reason other than a cold boot deserves investigation.
+//
+// A panic also prints its own backtrace to serial before this runs, and with the
+// coredump partition in partitions_4mb.csv it is now written to flash as well,
+// so a unit that crashed unattended is still diagnosable afterwards.
+//
+// Printed with Serial.printf rather than dualPrintf because it deliberately runs
+// BEFORE display init: if display/radio bring-up is what hangs (a failure mode
+// this project has hit), the reason still reaches a serial capture.
+static const char* fyResetReasonName(esp_reset_reason_t r) {
+  switch (r) {
+    case ESP_RST_POWERON:   return "POWERON (cold boot / power cycle)";
+    case ESP_RST_EXT:       return "EXT (external reset pin)";
+    case ESP_RST_SW:        return "SW (software reset) <-- investigate, none expected";
+    case ESP_RST_PANIC:     return "PANIC (firmware crash) <-- investigate";
+    case ESP_RST_INT_WDT:   return "INT_WDT (interrupt watchdog) <-- investigate";
+    case ESP_RST_TASK_WDT:  return "TASK_WDT (task watchdog) <-- investigate";
+    case ESP_RST_WDT:       return "WDT (other watchdog) <-- investigate";
+    case ESP_RST_DEEPSLEEP: return "DEEPSLEEP";
+    case ESP_RST_BROWNOUT:  return "BROWNOUT (power supply sag) <-- investigate";
+    case ESP_RST_SDIO:      return "SDIO";
+    default:                return "UNKNOWN";
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   delay(300);
+
+  // Boot diagnostics, deliberately first so they survive a hang during init.
+  // min_heap is the low-water mark since boot: a steadily falling floor across a
+  // run is the classic signature of a leak behind "it reboots after a while".
+  Serial.printf("[flockyou] boot: reset=%s\n",
+                fyResetReasonName(esp_reset_reason()));
+  Serial.printf("[flockyou] boot: heap=%u min_heap=%u\n",
+                (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap());
 
   // Load the user configuration FIRST (ADR-0001), before any display/audio init
   // and before the radios start. Two reasons: the Core2 startup vibration and the

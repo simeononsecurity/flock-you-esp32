@@ -1,3 +1,23 @@
-# Disable core dump to flash — no coredump partition in our partition table.
-# Prevents "No core dump partition found!" warning at every boot.
-CONFIG_ESP_COREDUMP_ENABLE_TO_NONE=y
+# ── This file does NOT do what its previous contents claimed ─────────────────
+#
+# It used to say: "Disable core dump to flash — no coredump partition in our
+# partition table. Prevents 'No core dump partition found!' warning at every
+# boot." That was wrong twice over, and the boot log proves it:
+#
+#   1. The warning still appeared on every boot, so the setting was not applied.
+#   2. It CANNOT apply here. This project builds against the Arduino core's
+#      *precompiled* ESP-IDF libraries (framework-arduinoespressif32-libs), and
+#      the ESP-IDF Kconfig baked into those libraries already has
+#      CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y (verified in the packaged
+#      tools/sdk/esp32/sdkconfig and tools/sdk/esp32s3/sdkconfig). No project
+#      sdkconfig.defaults can change a prebuilt .a.
+#
+# So the missing piece was never a setting — it was the coredump PARTITION in
+# partitions_4mb.csv. With that added, the already-compiled-in flash backend has
+# somewhere to write and the boot warning is gone for the right reason.
+#
+# Kept (and set to FLASH, matching the partition) rather than deleted, so that if
+# a future platform DOES honour this file, it agrees with the partition table
+# instead of re-disabling coredumps behind our back.
+CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
+CONFIG_ESP_COREDUMP_ENABLE_TO_NONE=n

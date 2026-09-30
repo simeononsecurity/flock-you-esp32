@@ -126,6 +126,28 @@ tooling (`api/*.py`) in this repository.
   `fyCheckBLEMfrID()`). Rule of thumb: if a value decides whether a detection
   fires, it belongs in `fy_detect.h`, and `main.cpp` should only call a matcher.
 
+- **`sdkconfig.defaults` is INERT in this project — do not expect it to change
+  anything.** This build links the Arduino core's *precompiled* ESP-IDF libraries
+  (`framework-arduinoespressif32-libs`), and their baked-in Kconfig is already
+  fixed at package-install time. A project `sdkconfig.defaults` cannot alter a
+  prebuilt `.a`, and no generated `sdkconfig` appears under `.pio/build/` — so a
+  setting placed there is silently ignored, which reads exactly like a setting
+  that "didn't take" and can burn hours. Verified for ESP32 and ESP32-S3 by
+  inspecting the packaged `tools/sdk/esp32*/sdkconfig`.
+  - This is how a `CONFIG_ESP_COREDUMP_ENABLE_TO_NONE=y` sat in the repo for a
+    long time while the *opposite* was true in the linked binary — the boot log
+    printed `No core dump partition found!` at every boot, which was the correct
+    complaint about a missing **partition**, not a setting. If you need an
+    ESP-IDF build option changed, check whether it is actually taking effect
+    before building a design on top of it; the escape hatch is a
+    `platform = https://github.com/pioarduino/platform-espressif32` style platform
+    that builds the framework from source, not this file.
+  - Corollary for anything boot-time and diagnostic: **print it, don't assume it.**
+    Adding `esp_reset_reason()` + heap to the first lines of `setup()` cost two
+    lines and turned an unactionable "it reboots sometimes" report into something
+    diagnosable; the same reasoning applies to any setting whose effect you cannot
+    observe.
+
 ## Python (`api/`)
 
 - Follow PEP 8. Use type hints on new functions.

@@ -85,6 +85,36 @@ blocking calls disguised as async). A future reader should be able to tell
 
 ### Fixed
 
+- **Crash evidence is no longer discarded.** A field unit reported rebooting
+  roughly hourly and appearing to lose its session. That report could not be
+  acted on, because the battery of things "reboot" can mean — a firmware panic,
+  an interrupt/task watchdog, a brownout, a deliberate software reset — each have
+  a different remedy, and this firmware recorded none of them.
+  - The firmware now prints **why it last restarted** and its **heap low-water
+    mark** at every boot, before display/radio init so the reason survives a hang
+    during init:
+    ```
+    [flockyou] boot: reset=POWERON (cold boot / power cycle)
+    [flockyou] boot: heap=214880 min_heap=201336
+    ```
+    Any reason other than a cold boot is suffixed `<-- investigate`. A heap
+    floor that keeps falling across a run is the signature of a leak, which is the
+    usual cause of a reboot that appears to arrive on a timer.
+  - A **`coredump` partition** was added to `partitions_4mb.csv` (60 KB, taken
+    from the space after `fycfg` — so **no existing offset moves** and neither
+    `spiffs` nor `fycfg` shrinks). A panic is now written to flash and can be
+    retrieved later with `esptool`, which matters for a unit that ran unattended.
+  - Root cause of the missing coredump, because the previous reasoning was wrong:
+    `sdkconfig.defaults` claimed to have disabled coredump-to-flash in order to
+    silence the boot-time "No core dump partition found!" warning. **That setting
+    never applied.** The Arduino core ships *precompiled* ESP-IDF libraries whose
+    baked-in Kconfig already has `CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y` (verified
+    in the packaged `tools/sdk/esp32/sdkconfig` and `.../esp32s3/sdkconfig`), and
+    no project `sdkconfig.defaults` can alter a prebuilt `.a`. The warning was
+    telling the truth: the backend was compiled in, and only the **partition** was
+    missing. Fixed by adding the partition rather than by changing a setting, and
+    `sdkconfig.defaults` now documents this instead of asserting the opposite.
+
 - **VoiceS3R flash verification** — `flash.sh` and `flash_voices3r.sh` now read
   for a `[flockyou]` boot line before declaring success. They previously
   declared "device running" from port presence alone, which reported success
