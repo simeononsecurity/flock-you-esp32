@@ -1491,8 +1491,16 @@ static void printSniffStats() {
 
 static void printHeartbeat() {
   if (millis() - lastHeartbeat >= HEARTBEAT_MS) {
-    dualPrintf("[flockyou] scanning (ch=%u mode=%s det=%d)\n",
-                  currentChannel, channelModeName(), fyDetCount);
+    // heap=/min_heap= belong on the periodic heartbeat, not only on the boot
+    // line: the boot value cannot distinguish "always was this low" from
+    // "falling steadily", and a leaking heap is the usual cause of a reboot that
+    // appears to arrive on a timer. min_heap is the low-water mark, so it only
+    // ever falls — which is precisely what makes a slow leak visible in a log
+    // someone is already capturing. An unattended unit that reboots is only
+    // diagnosable after the fact if this trend was recorded while it ran.
+    dualPrintf("[flockyou] scanning (ch=%u mode=%s det=%d) heap=%u min_heap=%u\n",
+                  currentChannel, channelModeName(), fyDetCount,
+                  (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap());
 #if FY_SNIFF_STATS
     printSniffStats();
 #endif

@@ -100,6 +100,17 @@ blocking calls disguised as async). A future reader should be able to tell
     Any reason other than a cold boot is suffixed `<-- investigate`. A heap
     floor that keeps falling across a run is the signature of a leak, which is the
     usual cause of a reboot that appears to arrive on a timer.
+  - **`heap=`/`min_heap=` are also on the periodic heartbeat**, not just at boot,
+    because the boot value cannot distinguish "always was this low" from "falling
+    steadily". `min_heap` is the low-water mark and so only ever falls, which is
+    what makes a slow leak visible in a log someone is already capturing while a
+    unit runs unattended:
+    ```
+    [flockyou] scanning (ch=11 mode=CUSTOM det=3) heap=214880 min_heap=201336
+    ```
+    Appending fields here is safe: `flash.sh` only greps the `scanning` substring,
+    and `api/flockyou.py` reads detection lines as JSON (a text line fails
+    `json.loads` and is ignored) — both verified rather than assumed.
   - A **`coredump` partition** was added to `partitions_4mb.csv` (60 KB, taken
     from the space after `fycfg` — so **no existing offset moves** and neither
     `spiffs` nor `fycfg` shrinks). A panic is now written to flash and can be
