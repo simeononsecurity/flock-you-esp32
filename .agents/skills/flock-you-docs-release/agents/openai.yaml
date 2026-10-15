@@ -1,0 +1,4 @@
+interface:
+  display_name: "Flock You Docs Release"
+  short_description: "Keep project docs and release facts aligned"
+  default_prompt: "Use $flock-you-docs-release to update and verify these project documents."

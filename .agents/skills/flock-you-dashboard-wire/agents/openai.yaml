@@ -1,0 +1,4 @@
+interface:
+  display_name: "Flock You Dashboard Wire"
+  short_description: "Protect serial and dashboard data flow"
+  default_prompt: "Use $flock-you-dashboard-wire to update and verify this dashboard data change."

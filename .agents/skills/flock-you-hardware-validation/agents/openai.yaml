@@ -1,0 +1,4 @@
+interface:
+  display_name: "Flock You Hardware Validation"
+  short_description: "Validate firmware on real ESP32 boards"
+  default_prompt: "Use $flock-you-hardware-validation to test this firmware on the attached hardware."

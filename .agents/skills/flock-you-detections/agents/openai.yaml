@@ -1,0 +1,4 @@
+interface:
+  display_name: "Flock You Detections"
+  short_description: "Change WiFi and BLE detection logic"
+  default_prompt: "Use $flock-you-detections to update and verify this detection path."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Flock You Web Flasher"
+  short_description: "Maintain flasher UI and binary contracts"
+  default_prompt: "Use $flock-you-web-flasher to update and verify the web flasher."

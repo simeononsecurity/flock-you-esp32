@@ -1,0 +1,4 @@
+interface:
+  display_name: "Flock You Firmware"
+  short_description: "Change board-aware ESP32 firmware safely"
+  default_prompt: "Use $flock-you-firmware to implement and verify this firmware change."
